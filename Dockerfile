@@ -34,6 +34,11 @@ ENV PATH=$PATH:/usr/local/mount-from-host/bin
 COPY --from=build /go/bin/kube-bench /usr/local/bin/kube-bench
 COPY entrypoint.sh .
 COPY cfg/ cfg/
+
+# Setup the service version in the container
+ARG SVC_VERSION
+ENV SERVICE_VERSION=${SVC_VERSION}
+
 ENTRYPOINT ["./entrypoint.sh"]
 CMD ["install"]
 
