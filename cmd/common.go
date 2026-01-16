@@ -417,6 +417,11 @@ func writeOutput(controlsCollection []*check.Controls) {
 		writeASFFOutput(controlsCollection)
 		return
 	}
+	if httpOutput {
+		writeHttpOutput(controlsCollection)
+		return
+	}
+
 	writeStdoutOutput(controlsCollection)
 }
 
