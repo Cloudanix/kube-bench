@@ -34,6 +34,7 @@ type HttpPostConfig struct {
 	AuthToken   string // Temporary storage for Auth Token
 	ListenerUrl string `yaml:"listenerUrl"` // HTTP Listener URL
 	NodeName    string `yaml:"nodeName"`    // Node Name
+	ServiceVersion string `yaml:"serviceVersion"` // Service Version
 
 	AccountId         string `yaml:"accountId"`         // Unique Account Id
 	ClusterIdentifier string `yaml:"clusterIdentifier"` // Cluster Identifier
@@ -49,6 +50,7 @@ const (
 	HeaderClusterName       = "cdx-cluster-name"
 	HeaderClusterDomain     = "cdx-cluster-domain"
 	HeaderNode              = "cdx-node-name"
+	HeaderSvcVersion        = "cdx-service-version"
 )
 
 func marshalControls(controlsCollection []*check.Controls) ([]byte, error) {
@@ -101,6 +103,7 @@ func writeHttpOutput(controlsCollection []*check.Controls) {
 	fmt.Println("secrets initialized")
 
 	cfg.NodeName = os.Getenv("NODE_NAME")
+	cfg.ServiceVersion = os.Getenv("SVC_VERSION")
 
 	// fmt.Printf("config: %s\n", cfg)
 
@@ -150,6 +153,7 @@ func publishResults(cfg *HttpPostConfig, resultsJson []byte) error {
 		req.Header.Add(HeaderClusterName, cfg.ClusterName)
 		req.Header.Add(HeaderClusterDomain, cfg.ClusterDomain)
 		req.Header.Add(HeaderNode, cfg.NodeName)
+		req.Header.Add(HeaderSvcVersion, cfg.ServiceVersion)
 
 		counter++
 		resp, err := Rc.Do(req)
