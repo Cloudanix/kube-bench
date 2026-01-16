@@ -16,7 +16,6 @@ package cmd
 
 import (
 	"errors"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -399,7 +398,7 @@ func TestGetServiceFiles(t *testing.T) {
 
 func TestGetDatadirFiles(t *testing.T) {
 	var err error
-	datadir, err := ioutil.TempDir("", "kube-bench-test-etcd-data-dir")
+	datadir, err := os.MkdirTemp("", "kube-bench-test-etcd-data-dir")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory")
 	}
@@ -474,7 +473,7 @@ func TestMakeSubsitutions(t *testing.T) {
 
 func TestGetConfigFilePath(t *testing.T) {
 	var err error
-	cfgDir, err = ioutil.TempDir("", "kube-bench-test")
+	cfgDir, err = os.MkdirTemp("", "kube-bench-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory")
 	}
@@ -484,7 +483,7 @@ func TestGetConfigFilePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp dir")
 	}
-	err = ioutil.WriteFile(filepath.Join(d, "master.yaml"), []byte("hello world"), 0666)
+	err = os.WriteFile(filepath.Join(d, "master.yaml"), []byte("hello world"), 0666)
 	if err != nil {
 		t.Logf("Failed to create temp file")
 	}
@@ -545,7 +544,7 @@ func TestDecrementVersion(t *testing.T) {
 }
 
 func TestGetYamlFilesFromDir(t *testing.T) {
-	cfgDir, err := ioutil.TempDir("", "kube-bench-test")
+	cfgDir, err := os.MkdirTemp("", "kube-bench-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory")
 	}
@@ -557,11 +556,11 @@ func TestGetYamlFilesFromDir(t *testing.T) {
 		t.Fatalf("Failed to create temp dir")
 	}
 
-	err = ioutil.WriteFile(filepath.Join(d, "something.yaml"), []byte("hello world"), 0666)
+	err = os.WriteFile(filepath.Join(d, "something.yaml"), []byte("hello world"), 0666)
 	if err != nil {
 		t.Fatalf("error writing file %v", err)
 	}
-	err = ioutil.WriteFile(filepath.Join(d, "config.yaml"), []byte("hello world"), 0666)
+	err = os.WriteFile(filepath.Join(d, "config.yaml"), []byte("hello world"), 0666)
 	if err != nil {
 		t.Fatalf("error writing file %v", err)
 	}
@@ -613,6 +612,26 @@ func Test_getPlatformNameFromKubectlOutput(t *testing.T) {
 			args: args{s: ""},
 			want: Platform{},
 		},
+		{
+			name: "k3s",
+			args: args{s: "v1.27.6+k3s1"},
+			want: Platform{Name: "k3s", Version: "1.27"},
+		},
+		{
+			name: "rancher1",
+			args: args{s: "v1.25.13-rancher1-1"},
+			want: Platform{Name: "rancher1", Version: "1.25"},
+		},
+		{
+			name: "rke2",
+			args: args{s: "v1.27.6+rke2r1"},
+			want: Platform{Name: "rke2r", Version: "1.27"},
+		},
+		{
+			name: "aks",
+			args: args{s: "v1.27.6+aks1"},
+			want: Platform{Name: "aks", Version: "1.27"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -632,11 +651,39 @@ func Test_getPlatformBenchmarkVersion(t *testing.T) {
 		want string
 	}{
 		{
-			name: "eks",
+			name: "eks 1.31",
 			args: args{
-				platform: Platform{Name: "eks"},
+				platform: Platform{Name: "eks", Version: "1.31"},
 			},
-			want: "eks-1.2.0",
+			want: "eks-1.7.0",
+		},
+		{
+			name: "eks 1.29",
+			args: args{
+				platform: Platform{Name: "eks", Version: "1.29"},
+			},
+			want: "eks-1.7.0",
+		},
+		{
+			name: "eks 1.30",
+			args: args{
+				platform: Platform{Name: "eks", Version: "1.30"},
+			},
+			want: "eks-1.7.0",
+		},
+		{
+			name: "eks 1.32",
+			args: args{
+				platform: Platform{Name: "eks", Version: "1.32"},
+			},
+			want: "eks-1.8.0",
+		},
+		{
+			name: "eks 1.24",
+			args: args{
+				platform: Platform{Name: "eks", Version: "1.24"},
+			},
+			want: "eks-1.5.0",
 		},
 		{
 			name: "gke 1.19",
@@ -658,6 +705,20 @@ func Test_getPlatformBenchmarkVersion(t *testing.T) {
 				platform: Platform{Name: "gke", Version: "1.22"},
 			},
 			want: "gke-1.2.0",
+		},
+		{
+			name: "gke 1.28",
+			args: args{
+				platform: Platform{Name: "gke", Version: "1.28"},
+			},
+			want: "gke-1.6.0",
+		},
+		{
+			name: "gke 1.31",
+			args: args{
+				platform: Platform{Name: "gke", Version: "1.31"},
+			},
+			want: "gke-1.8.0",
 		},
 		{
 			name: "aliyun",
@@ -690,9 +751,58 @@ func Test_getPlatformBenchmarkVersion(t *testing.T) {
 		{
 			name: "openshift4",
 			args: args{
+				platform: Platform{Name: "ocp", Version: "4.11"},
+			},
+			want: "rh-1.4",
+		},
+		{
+			name: "openshift4",
+			args: args{
+				platform: Platform{Name: "ocp", Version: "4.13"},
+			},
+			want: "rh-1.8",
+		},
+		{
+			name: "openshift4",
+			args: args{
 				platform: Platform{Name: "ocp", Version: "4.1"},
 			},
 			want: "rh-1.0",
+		},
+		{
+			name: "k3s",
+			args: args{
+				platform: Platform{Name: "k3s", Version: "1.27"},
+			},
+			want: "k3s-cis-1.7",
+		},
+		{
+			name: "rancher1",
+			args: args{
+				platform: Platform{Name: "rancher", Version: "1.27"},
+			},
+			want: "rke-cis-1.7",
+		},
+		{
+			name: "rke2",
+			args: args{
+				platform: Platform{Name: "rke2r", Version: "1.25"},
+			},
+			want: "rke2-cis-1.7",
+		},
+		{
+			name: "rke2",
+			args: args{
+				platform: Platform{Name: "rke2r", Version: "1.26"},
+			},
+			want: "rke2-cis-1.8",
+		},
+		{
+			name: "aks",
+			args: args{
+				platform: Platform{Name: "aks", Version: "1.27"},
+			},
+			want: "aks-1.7",
 		},
 	}
 	for _, tt := range tests {

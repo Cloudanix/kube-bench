@@ -16,7 +16,6 @@ package check
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"strings"
 	"testing"
@@ -29,7 +28,7 @@ var (
 
 func init() {
 	var err error
-	in, err = ioutil.ReadFile("data")
+	in, err = os.ReadFile("data")
 	if err != nil {
 		panic("Failed reading test data: " + err.Error())
 	}
@@ -291,7 +290,7 @@ func TestTestExecute(t *testing.T) {
 			c.check.AuditEnvOutput = c.strEnv
 			res, err := c.check.execute()
 			if err != nil {
-				t.Errorf(err.Error())
+				t.Error(err.Error())
 			}
 			if !res.testResult {
 				t.Errorf("Test ID %v - expected:%v, got:%v", c.check.ID, true, res)
@@ -335,7 +334,7 @@ func TestTestExecuteExceptions(t *testing.T) {
 			c.Check.AuditConfigOutput = c.str
 			res, err := c.Check.execute()
 			if err != nil {
-				t.Errorf(err.Error())
+				t.Error(err.Error())
 			}
 			if res.testResult {
 				t.Errorf("expected:%v, got:%v", false, res)

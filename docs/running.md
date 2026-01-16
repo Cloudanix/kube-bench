@@ -92,7 +92,7 @@ aws ecr create-repository --repository-name k8s/kube-bench --image-tag-mutabilit
 git clone https://github.com/aquasecurity/kube-bench.git
 cd kube-bench
 aws ecr get-login-password --region <AWS_REGION> | docker login --username AWS --password-stdin <AWS_ACCT_NUMBER>.dkr.ecr.<AWS_REGION>.amazonaws.com
-docker build -t k8s/kube-bench .
+make build-docker IMAGE_NAME=k8s/kube-bench
 docker tag k8s/kube-bench:latest <AWS_ACCT_NUMBER>.dkr.ecr.<AWS_REGION>.amazonaws.com/k8s/kube-bench:latest
 docker push <AWS_ACCT_NUMBER>.dkr.ecr.<AWS_REGION>.amazonaws.com/k8s/kube-bench:latest
 ```
@@ -154,8 +154,9 @@ oc apply -f job.yaml
 | ------------- | ----------------------------------------------------------- |
 | gke-1.0       | master, controlplane, node, etcd, policies, managedservices |
 | gke-1.2.0     | master, controlplane, node, policies, managedservices       |
+| gke-1.6.0     | master, controlplane, node, policies, managedservices       |
 
-kube-bench includes benchmarks for GKE. To run this you will need to specify `--benchmark gke-1.0` or `--benchmark gke-1.2.0` when you run the `kube-bench` command.
+kube-bench includes benchmarks for GKE. To run this you will need to specify `--benchmark gke-1.0`, `--benchmark gke-1.2.0` or `--benchmark gke-1.6.0` when you run the `kube-bench` command.
 
 To run the benchmark as a job in your GKE cluster apply the included `job-gke.yaml`.
 
@@ -192,3 +193,30 @@ To run the benchmark as a job in your VMware tkgi cluster apply the included `jo
 ```
 kubectl apply -f job-tkgi.yaml
 ```
+
+### Running in a Rancher RKE cluster
+
+| CIS Benchmark | Targets                                    |
+|---------------|--------------------------------------------|
+| rke-cis-1.7   | master, etcd, controlplane, node, policies |
+
+kube-bench includes benchmarks for Rancher RKE platform.
+To run this you will need to specify `--benchmark rke-cis-1.7` when you run the `kube-bench` command.
+
+### Running in a Rancher RKE2 cluster
+
+| CIS Benchmark | Targets                                    |
+|---------------|--------------------------------------------|
+| rke2-cis-1.7  | master, etcd, controlplane, node, policies |
+
+kube-bench includes benchmarks for Rancher RKE2 platform.
+To run this you will need to specify `--benchmark rke2-cis-1.7` when you run the `kube-bench` command.
+
+### Running in a Rancher K3s cluster
+
+| CIS Benchmark | Targets                                    |
+|---------------|--------------------------------------------|
+| k3s-cis-1.7   | master, etcd, controlplane, node, policies |
+
+kube-bench includes benchmarks for Rancher K3S platform.
+To run this you will need to specify `--benchmark k3s-cis-1.7` when you run the `kube-bench` command.
