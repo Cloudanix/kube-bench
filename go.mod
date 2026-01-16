@@ -8,6 +8,8 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/securityhub v1.29.1
 	github.com/fatih/color v1.14.1
 	github.com/golang/glog v1.0.0
+	github.com/google/uuid v1.3.0
+	github.com/hashicorp/go-retryablehttp v0.7.1
 	github.com/magiconair/properties v1.8.7
 	github.com/onsi/ginkgo v1.16.5
 	github.com/pkg/errors v0.9.1
@@ -33,6 +35,7 @@ require (
 	github.com/aws/smithy-go v1.13.5 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/fsnotify/fsnotify v1.6.0 // indirect
+	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
 	github.com/hashicorp/hcl v1.0.0 // indirect
 	github.com/inconshreveable/mousetrap v1.0.1 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
