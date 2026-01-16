@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -53,7 +52,7 @@ func TestYamlFiles(t *testing.T) {
 		}
 		if !info.IsDir() {
 			t.Logf("reading file: %s", path)
-			in, err := ioutil.ReadFile(path)
+			in, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatalf("error opening file %s: %v", path, err)
 			}
@@ -408,7 +407,7 @@ func TestControls_ASFF(t *testing.T) {
 			want: []types.AwsSecurityFinding{
 				{
 					AwsAccountId:  aws.String("foo account"),
-					Confidence:    *aws.Int32(100),
+					Confidence:    aws.Int32(100),
 					GeneratorId:   aws.String(fmt.Sprintf("%s/cis-kubernetes-benchmark/%s/%s", fmt.Sprintf(ARN, "somewhere"), "1", "check1id")),
 					Description:   aws.String("check1text"),
 					ProductArn:    aws.String(fmt.Sprintf(ARN, "somewhere")),
