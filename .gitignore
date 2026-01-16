@@ -14,3 +14,5 @@ thumbs.db
 /kubeconfig.kube-bench
 /test.data
 *.iml
+
+build.log
