@@ -94,6 +94,7 @@ main() {
 
 	"${BUILD_CMD[@]}" "${BUILD_TAGS[@]}" \
 		--build-arg "SVC_VERSION=$IMAGE_TAG" \
+		--build-arg "KUBECTL_VERSION=1.35.0" \
 		--progress=plain \
 		. 2>&1 | tee build.log
 
