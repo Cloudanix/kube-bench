@@ -51,6 +51,7 @@ const (
 	HeaderClusterDomain     = "cdx-cluster-domain"
 	HeaderNode              = "cdx-node-name"
 	HeaderSvcVersion        = "cdx-service-version"
+	HeaderTemplateType      = "cdx-template-type"
 )
 
 func marshalControls(controlsCollection []*check.Controls) ([]byte, error) {
@@ -154,6 +155,7 @@ func publishResults(cfg *HttpPostConfig, resultsJson []byte) error {
 		req.Header.Add(HeaderClusterDomain, cfg.ClusterDomain)
 		req.Header.Add(HeaderNode, cfg.NodeName)
 		req.Header.Add(HeaderSvcVersion, cfg.ServiceVersion)
+		req.Header.Add(HeaderTemplateType, "KUBERNETESMISCONFIG")
 
 		counter++
 		resp, err := Rc.Do(req)
