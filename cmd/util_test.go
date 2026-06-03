@@ -714,11 +714,18 @@ func Test_getPlatformBenchmarkVersion(t *testing.T) {
 			want: "gke-1.6.0",
 		},
 		{
-			name: "gke 1.31",
+			name: "gke 1.30",
 			args: args{
-				platform: Platform{Name: "gke", Version: "1.31"},
+				platform: Platform{Name: "gke", Version: "1.30"},
 			},
 			want: "gke-1.8.0",
+		},
+		{
+			name: "gke 1.33",
+			args: args{
+				platform: Platform{Name: "gke", Version: "1.33"},
+			},
+			want: "gke-1.9.0",
 		},
 		{
 			name: "aliyun",
@@ -770,11 +777,39 @@ func Test_getPlatformBenchmarkVersion(t *testing.T) {
 			want: "rh-1.0",
 		},
 		{
-			name: "k3s",
+			name: "k3s 1.25",
+			args: args{
+				platform: Platform{Name: "k3s", Version: "1.25"},
+			},
+			want: "k3s-cis-1.7",
+		},
+		{
+			name: "k3s 1.26",
+			args: args{
+				platform: Platform{Name: "k3s", Version: "1.26"},
+			},
+			want: "k3s-cis-1.8",
+		},
+		{
+			name: "k3s 1.27",
 			args: args{
 				platform: Platform{Name: "k3s", Version: "1.27"},
 			},
-			want: "k3s-cis-1.7",
+			want: "k3s-cis-1.9",
+		},
+		{
+			name: "k3s 1.28",
+			args: args{
+				platform: Platform{Name: "k3s", Version: "1.28"},
+			},
+			want: "k3s-cis-1.9",
+		},
+		{
+			name: "k3s 1.29",
+			args: args{
+				platform: Platform{Name: "k3s", Version: "1.29"},
+			},
+			want: "k3s-cis-1.9",
 		},
 		{
 			name: "rancher1",
@@ -800,9 +835,16 @@ func Test_getPlatformBenchmarkVersion(t *testing.T) {
 		{
 			name: "aks",
 			args: args{
-				platform: Platform{Name: "aks", Version: "1.27"},
+				platform: Platform{Name: "aks", Version: "1.29"},
 			},
 			want: "aks-1.7",
+		},
+		{
+			name: "aks",
+			args: args{
+				platform: Platform{Name: "aks", Version: "1.32"},
+			},
+			want: "aks-1.8",
 		},
 	}
 	for _, tt := range tests {
