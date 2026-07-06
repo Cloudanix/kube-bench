@@ -10,7 +10,7 @@ fi
 
 if [[ "${1-}" =~ ^-*h(elp)?$ ]]; then
     echo 'Usage: ./build.sh [OPTIONS]
-This script generates Docker images for the misconfig-cron service with multi-architecture support.
+This script generates Docker images for the misconfig-scanner service with multi-architecture support.
 
 Options:
   --tag TAG              Image tag (default: latest git tag, or "latest")
@@ -36,7 +36,7 @@ main() {
 
 	REGISTRY="cloudanix"
 
-	IMAGE_NAME="misconfig-cron"
+	IMAGE_NAME="misconfig-scanner"
 	
 	# Parse command line arguments
 	while [[ $# -gt 0 ]]; do
