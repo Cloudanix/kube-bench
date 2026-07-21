@@ -352,6 +352,38 @@ func getBenchmarkVersion(kubeVersion, benchmarkVersion string, platform Platform
 	return benchmarkVersion, nil
 }
 
+// getBenchmarkVersions resolves the --benchmark flag into one or more benchmark
+// versions. A comma-separated value (e.g. "eks-1.1.0,cloudanix-1.0") runs every
+// listed benchmark in a single process. A single or empty value keeps the
+// original single-benchmark resolution (auto-detect / version mapping).
+func getBenchmarkVersions(kubeVersion, benchmarkVersion string, platform Platform, v *viper.Viper) ([]string, error) {
+	if strings.Contains(benchmarkVersion, ",") {
+		if !isEmpty(kubeVersion) {
+			return nil, fmt.Errorf("It is an error to specify both --version and --benchmark flags")
+		}
+		seen := make(map[string]bool)
+		versions := make([]string, 0)
+		for _, part := range strings.Split(benchmarkVersion, ",") {
+			b := strings.TrimSpace(part)
+			if b == "" || seen[b] {
+				continue
+			}
+			seen[b] = true
+			versions = append(versions, b)
+		}
+		if len(versions) == 0 {
+			return nil, fmt.Errorf("no benchmark versions parsed from %q", benchmarkVersion)
+		}
+		return versions, nil
+	}
+
+	bv, err := getBenchmarkVersion(kubeVersion, benchmarkVersion, platform, v)
+	if err != nil {
+		return nil, err
+	}
+	return []string{bv}, nil
+}
+
 // isMaster verify if master components are running on the node.
 func isMaster() bool {
 	return isThisNodeRunning(check.MASTER)
