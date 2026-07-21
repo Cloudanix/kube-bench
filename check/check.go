@@ -81,6 +81,7 @@ type Check struct {
 	IsMultiple        bool   `yaml:"use_multiple_values"`
 	ExpectedResult    string `json:"expected_result"`
 	Reason            string `json:"reason,omitempty"`
+	Severity          string `yaml:"severity" json:"severity,omitempty"`
 	AuditOutput       string `json:"-"`
 	AuditEnvOutput    string `json:"-"`
 	AuditConfigOutput string `json:"-"`
