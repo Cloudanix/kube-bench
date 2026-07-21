@@ -106,7 +106,7 @@ groups:
       - id: C1.5
         text: "Containers drop ALL capabilities (Automated)"
         severity: high
-        references: ["cis:5.2.9", "cis:5.2.10"]
+        references: ["cis:5.2.9"]
         audit: |
           kubectl get pods --all-namespaces -o json | jq -r '
             .items[]
@@ -153,7 +153,7 @@ groups:
       - id: C1.7
         text: "Pods do not mount hostPath volumes (Automated)"
         severity: high
-        references: ["cis:5.2.12"]
+        references: ["cis:5.2.11"]
         audit: |
           kubectl get pods --all-namespaces -o json | jq -r '
             .items[]
