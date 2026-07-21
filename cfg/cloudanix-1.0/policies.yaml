@@ -1,0 +1,500 @@
+---
+controls:
+version: "cloudanix-1.0"
+id: 1
+text: "Workload & Tenancy Best Practices"
+type: "policies"
+groups:
+  - id: 1
+    text: "Workload Security (Pod & Container Spec)"
+    checks:
+      - id: C1.1
+        text: "No container runs in privileged mode (Automated)"
+        severity: critical
+        audit: |
+          kubectl get pods --all-namespaces -o json | jq -r '
+            .items[]
+            | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
+            | .metadata.namespace as $ns | .metadata.name as $pod
+            | ((.spec.containers // []) + (.spec.initContainers // []))[]
+            | "**privileged ns=\($ns) pod=\($pod) container=\(.name) is_compliant=\(if (.securityContext.privileged // false) then "false" else "true" end)"'
+        use_multiple_values: true
+        tests:
+          test_items:
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
+        remediation: |
+          Remove `securityContext.privileged: true` from the container spec. If the
+          workload needs specific kernel capabilities, add only those via
+          `securityContext.capabilities.add` instead of granting full privilege.
+          A privileged container can compromise the node and other pods on it.
+        scored: true
+
+      - id: C1.2
+        text: "No pod shares a host namespace (hostPID/hostIPC/hostNetwork) (Automated)"
+        severity: critical
+        audit: |
+          kubectl get pods --all-namespaces -o json | jq -r '
+            .items[]
+            | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
+            | "**hostns ns=\(.metadata.namespace) pod=\(.metadata.name) is_compliant=\(if ((.spec.hostPID // false) or (.spec.hostIPC // false) or (.spec.hostNetwork // false)) then "false" else "true" end)"'
+        use_multiple_values: true
+        tests:
+          test_items:
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
+        remediation: |
+          Set `hostPID`, `hostIPC` and `hostNetwork` to false (or omit them) in the
+          pod spec. Sharing a host namespace breaks the isolation boundary between
+          the pod and the node.
+        scored: true
+
+      - id: C1.3
+        text: "Containers run as non-root (Automated)"
+        severity: high
+        audit: |
+          kubectl get pods --all-namespaces -o json | jq -r '
+            .items[]
+            | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
+            | .metadata.namespace as $ns | .metadata.name as $pod
+            | (.spec.securityContext.runAsNonRoot // false) as $podNonRoot
+            | ((.spec.containers // []) + (.spec.initContainers // []))[]
+            | "**nonroot ns=\($ns) pod=\($pod) container=\(.name) is_compliant=\(if ($podNonRoot or (.securityContext.runAsNonRoot // false)) then "true" else "false" end)"'
+        use_multiple_values: true
+        tests:
+          test_items:
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
+        remediation: |
+          Set `securityContext.runAsNonRoot: true` at the pod level or on every
+          container. Running as root inside a container widens the impact of a
+          container escape.
+        scored: true
+
+      - id: C1.4
+        text: "Containers disallow privilege escalation (Automated)"
+        severity: high
+        audit: |
+          kubectl get pods --all-namespaces -o json | jq -r '
+            .items[]
+            | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
+            | .metadata.namespace as $ns | .metadata.name as $pod
+            | ((.spec.containers // []) + (.spec.initContainers // []))[]
+            | "**noprivesc ns=\($ns) pod=\($pod) container=\(.name) is_compliant=\(if (.securityContext.allowPrivilegeEscalation == false) then "true" else "false" end)"'
+        use_multiple_values: true
+        tests:
+          test_items:
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
+        remediation: |
+          Set `securityContext.allowPrivilegeEscalation: false` on every container.
+          It defaults to true, letting a process gain more privileges than its parent.
+        scored: true
+
+      - id: C1.5
+        text: "Containers drop ALL capabilities (Automated)"
+        severity: high
+        audit: |
+          kubectl get pods --all-namespaces -o json | jq -r '
+            .items[]
+            | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
+            | .metadata.namespace as $ns | .metadata.name as $pod
+            | ((.spec.containers // []) + (.spec.initContainers // []))[]
+            | (.securityContext.capabilities.drop // []) as $drop
+            | "**dropcaps ns=\($ns) pod=\($pod) container=\(.name) is_compliant=\(if (($drop | index("ALL")) or ($drop | index("all"))) then "true" else "false" end)"'
+        use_multiple_values: true
+        tests:
+          test_items:
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
+        remediation: |
+          Add `securityContext.capabilities.drop: ["ALL"]` to every container and
+          add back only the specific capabilities the workload needs.
+        scored: true
+
+      - id: C1.6
+        text: "Containers use a read-only root filesystem (Automated)"
+        severity: medium
+        audit: |
+          kubectl get pods --all-namespaces -o json | jq -r '
+            .items[]
+            | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
+            | .metadata.namespace as $ns | .metadata.name as $pod
+            | ((.spec.containers // []) + (.spec.initContainers // []))[]
+            | "**rorootfs ns=\($ns) pod=\($pod) container=\(.name) is_compliant=\(if (.securityContext.readOnlyRootFilesystem == true) then "true" else "false" end)"'
+        use_multiple_values: true
+        tests:
+          test_items:
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
+        remediation: |
+          Set `securityContext.readOnlyRootFilesystem: true`. If the container must
+          write, mount an `emptyDir` at the writable path instead of leaving the
+          whole root filesystem writable.
+        scored: true
+
+      - id: C1.7
+        text: "Pods do not mount hostPath volumes (Automated)"
+        severity: high
+        audit: |
+          kubectl get pods --all-namespaces -o json | jq -r '
+            .items[]
+            | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
+            | "**hostpath ns=\(.metadata.namespace) pod=\(.metadata.name) is_compliant=\(if ([ (.spec.volumes // [])[] | select(.hostPath != null) ] | length) > 0 then "false" else "true" end)"'
+        use_multiple_values: true
+        tests:
+          test_items:
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
+        remediation: |
+          Remove `hostPath` volumes. They expose the node filesystem to the pod;
+          use PersistentVolumes, `emptyDir`, or projected volumes instead.
+        scored: true
+
+      - id: C1.8
+        text: "Containers set CPU and memory limits (Automated)"
+        severity: medium
+        audit: |
+          kubectl get pods --all-namespaces -o json | jq -r '
+            .items[]
+            | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
+            | .metadata.namespace as $ns | .metadata.name as $pod
+            | (.spec.containers // [])[]
+            | "**limits ns=\($ns) pod=\($pod) container=\(.name) is_compliant=\(if ((.resources.limits.cpu != null) and (.resources.limits.memory != null)) then "true" else "false" end)"'
+        use_multiple_values: true
+        tests:
+          test_items:
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
+        remediation: |
+          Set `resources.limits.cpu` and `resources.limits.memory` on every
+          container so a single workload cannot exhaust a node.
+        scored: true
+
+      - id: C1.9
+        text: "Containers set CPU and memory requests (Automated)"
+        severity: low
+        audit: |
+          kubectl get pods --all-namespaces -o json | jq -r '
+            .items[]
+            | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
+            | .metadata.namespace as $ns | .metadata.name as $pod
+            | (.spec.containers // [])[]
+            | "**requests ns=\($ns) pod=\($pod) container=\(.name) is_compliant=\(if ((.resources.requests.cpu != null) and (.resources.requests.memory != null)) then "true" else "false" end)"'
+        use_multiple_values: true
+        tests:
+          test_items:
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
+        remediation: |
+          Set `resources.requests.cpu` and `resources.requests.memory` so the
+          scheduler can place the pod correctly and QoS is not BestEffort.
+        scored: true
+
+      - id: C1.10
+        text: "Container images are not tagged :latest or untagged (Automated)"
+        severity: low
+        audit: |
+          kubectl get pods --all-namespaces -o json | jq -r '
+            .items[]
+            | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
+            | .metadata.namespace as $ns | .metadata.name as $pod
+            | ((.spec.containers // []) + (.spec.initContainers // []))[]
+            | .image as $img
+            | (($img | contains("@")) or (($img | split("/") | last | contains(":")) and (($img | endswith(":latest")) | not))) as $ok
+            | "**imagetag ns=\($ns) pod=\($pod) container=\(.name) is_compliant=\(if $ok then "true" else "false" end)"'
+        use_multiple_values: true
+        tests:
+          test_items:
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
+        remediation: |
+          Pin images to an immutable tag or a digest (image@sha256:...). `:latest`
+          and untagged images make deployments non-reproducible and hard to audit.
+        scored: true
+
+      - id: C1.11
+        text: "Mutable image tags use imagePullPolicy Always (Automated)"
+        severity: low
+        audit: |
+          kubectl get pods --all-namespaces -o json | jq -r '
+            .items[]
+            | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
+            | .metadata.namespace as $ns | .metadata.name as $pod
+            | ((.spec.containers // []) + (.spec.initContainers // []))[]
+            | .image as $img
+            | (($img | contains("@")) or (($img | split("/") | last | contains(":")) and (($img | endswith(":latest")) | not))) as $immutable
+            | "**pullpolicy ns=\($ns) pod=\($pod) container=\(.name) is_compliant=\(if ($immutable or (.imagePullPolicy == "Always")) then "true" else "false" end)"'
+        use_multiple_values: true
+        tests:
+          test_items:
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
+        remediation: |
+          For mutable tags (:latest or untagged) set `imagePullPolicy: Always` so a
+          node cannot silently run a stale cached image.
+        scored: true
+
+      - id: C1.12
+        text: "Containers define liveness and readiness probes (Manual)"
+        severity: low
+        type: "manual"
+        remediation: |
+          Define both `livenessProbe` and `readinessProbe` on each long-running
+          container so Kubernetes can restart hung pods and keep traffic off pods
+          that are not ready.
+        scored: false
+
+  - id: 2
+    text: "RBAC & ServiceAccounts"
+    checks:
+      - id: C2.1
+        text: "No ServiceAccount is bound to cluster-admin (Automated)"
+        severity: critical
+        audit: |
+          kubectl get clusterrolebindings -o json | jq -r '
+            .items[]
+            | select(.roleRef.name == "cluster-admin")
+            | .metadata.name as $crb
+            | ((.subjects // [])[] | select(.kind == "ServiceAccount"))
+            | "**clusteradmin crb=\($crb) sa=\(.namespace)/\(.name) is_compliant=false"'
+        use_multiple_values: true
+        tests:
+          test_items:
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
+        remediation: |
+          Do not bind ServiceAccounts to the cluster-admin ClusterRole. Grant a
+          narrowly-scoped Role/ClusterRole with only the verbs the workload needs,
+          then delete the binding: kubectl delete clusterrolebinding [name].
+          Note: this check only emits non-compliant lines; if none are emitted the
+          check passes.
+        scored: true
+
+      - id: C2.2
+        text: "Pods that don't need the API disable token automount (Automated)"
+        severity: medium
+        audit: |
+          kubectl get pods --all-namespaces -o json | jq -r '
+            .items[]
+            | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
+            | "**automount ns=\(.metadata.namespace) pod=\(.metadata.name) is_compliant=\(if (.spec.automountServiceAccountToken == false) then "true" else "false" end)"'
+        use_multiple_values: true
+        tests:
+          test_items:
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
+        remediation: |
+          Set `automountServiceAccountToken: false` on the pod (or its
+          ServiceAccount) unless the workload calls the Kubernetes API. A mounted
+          token is a ready-made credential for an attacker who lands in the pod.
+          ponytail: pod-level check; workloads that legitimately call the API will
+          flag here and should be reviewed rather than blindly remediated.
+        scored: true
+
+      - id: C2.3
+        text: "pods/exec is not granted to broad subjects (Manual)"
+        severity: high
+        type: "manual"
+        remediation: |
+          Review Roles/ClusterRoles that grant `create` on `pods/exec`. Exec into a
+          running pod bypasses image immutability and admission controls; restrict
+          it to a small set of named human operators.
+        scored: false
+
+      - id: C2.4
+        text: "No RoleBinding grants access to anonymous/unauthenticated (Automated)"
+        severity: critical
+        audit: |
+          kubectl get rolebindings,clusterrolebindings --all-namespaces -o json | jq -r '
+            .items[]
+            | .kind as $kind | .metadata.name as $name
+            | ((.subjects // [])[] | select(.name == "system:anonymous" or .name == "system:unauthenticated"))
+            | "**anon kind=\($kind) name=\($name) subject=\(.name) is_compliant=false"'
+        use_multiple_values: true
+        tests:
+          test_items:
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
+        remediation: |
+          Delete any (Cluster)RoleBinding whose subject is `system:anonymous` or the
+          `system:unauthenticated` group. These grant access to unauthenticated
+          callers. If none are emitted the check passes.
+        scored: true
+
+  - id: 3
+    text: "Namespace Tenancy & Network Isolation"
+    checks:
+      - id: C3.1
+        text: "Every non-system namespace has a default-deny NetworkPolicy (Automated)"
+        severity: high
+        audit: |
+          nps=$(kubectl get networkpolicies --all-namespaces -o json)
+          kubectl get namespaces -o json | jq -r --argjson nps "$nps" '
+            .items[]
+            | select(.metadata.name as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
+            | .metadata.name as $ns
+            | ([ $nps.items[]
+                 | select(.metadata.namespace == $ns)
+                 | select((.spec.podSelector == {}) or (.spec.podSelector.matchLabels == null and .spec.podSelector.matchExpressions == null))
+                 | select((.spec.policyTypes // []) | index("Ingress")) ] | length) as $deny
+            | "**netpol ns=\($ns) is_compliant=\(if $deny > 0 then "true" else "false" end)"'
+        use_multiple_values: true
+        tests:
+          test_items:
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
+        remediation: |
+          Apply a default-deny NetworkPolicy (empty podSelector, policyTypes:
+          [Ingress]) to each application namespace, then allow only the flows you
+          need. Without one, every pod is reachable from every other pod.
+        scored: true
+
+      - id: C3.2
+        text: "No workloads run in the default namespace (Automated)"
+        severity: medium
+        audit: |
+          kubectl get pods -n default -o json | jq -r '
+            "**defaultns is_compliant=\(if ((.items // []) | length) == 0 then "true" else "false" end)"'
+        use_multiple_values: true
+        tests:
+          test_items:
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
+        remediation: |
+          Move workloads out of the `default` namespace into purpose-specific
+          namespaces so RBAC, quotas and NetworkPolicies can be scoped per tenant.
+        scored: true
+
+      - id: C3.3
+        text: "Namespaces enforce Pod Security Admission (baseline or stricter) (Automated)"
+        severity: high
+        audit: |
+          kubectl get namespaces -o json | jq -r '
+            .items[]
+            | select(.metadata.name as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
+            | (.metadata.labels["pod-security.kubernetes.io/enforce"] // "") as $lvl
+            | "**psa ns=\(.metadata.name) is_compliant=\(if ($lvl == "baseline" or $lvl == "restricted") then "true" else "false" end)"'
+        use_multiple_values: true
+        tests:
+          test_items:
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
+        remediation: |
+          Label each namespace with
+          `pod-security.kubernetes.io/enforce: baseline` (or `restricted`) so the
+          built-in Pod Security Admission controller rejects unsafe pods.
+        scored: true
+
+      - id: C3.4
+        text: "Tenant namespaces have a ResourceQuota (Manual)"
+        severity: low
+        type: "manual"
+        remediation: |
+          Create a ResourceQuota per tenant namespace to bound aggregate CPU,
+          memory and object counts, preventing one tenant from starving others.
+        scored: false
+
+  - id: 4
+    text: "Secrets & Config Hygiene"
+    checks:
+      - id: C4.1
+        text: "Sensitive values are not passed as literal env vars (Automated)"
+        severity: medium
+        audit: |
+          kubectl get pods --all-namespaces -o json | jq -r '
+            .items[]
+            | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
+            | .metadata.namespace as $ns | .metadata.name as $pod
+            | ((.spec.containers // []) + (.spec.initContainers // []))[]
+            | .name as $c
+            | (.env // [])[]
+            | select((.value != null) and (.name | test("PASSWORD|SECRET|TOKEN|APIKEY|API_KEY|CREDENTIAL|PRIVATE_KEY"; "i")))
+            | "**literalsecret ns=\($ns) pod=\($pod) container=\($c) env=\(.name) is_compliant=false"'
+        use_multiple_values: true
+        tests:
+          test_items:
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
+        remediation: |
+          Reference secrets via `valueFrom.secretKeyRef` or a mounted Secret volume
+          instead of a literal `value:`. Literal values land in the pod manifest,
+          logs and `kubectl describe`. If none are emitted the check passes.
+        scored: true
+
+      - id: C4.2
+        text: "Prefer bound/projected ServiceAccount tokens over Secret tokens (Manual)"
+        severity: low
+        type: "manual"
+        remediation: |
+          Avoid long-lived ServiceAccount token Secrets; use projected
+          (TokenRequest) tokens with an audience and expiry instead.
+        scored: false
+
+  - id: 5
+    text: "Availability & Resource Governance"
+    checks:
+      - id: C5.1
+        text: "Multi-replica Deployments have a PodDisruptionBudget (Manual)"
+        severity: low
+        type: "manual"
+        remediation: |
+          Define a PodDisruptionBudget for each multi-replica Deployment so node
+          drains and rollouts keep a minimum number of pods available.
+        scored: false
+
+      - id: C5.2
+        text: "Pods are managed by a controller (no naked pods) (Automated)"
+        severity: low
+        audit: |
+          kubectl get pods --all-namespaces -o json | jq -r '
+            .items[]
+            | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
+            | "**owner ns=\(.metadata.namespace) pod=\(.metadata.name) is_compliant=\(if ([ (.metadata.ownerReferences // [])[] | select(.controller == true) ] | length) > 0 then "true" else "false" end)"'
+        use_multiple_values: true
+        tests:
+          test_items:
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
+        remediation: |
+          Manage pods through a controller (Deployment, StatefulSet, DaemonSet,
+          Job). A naked pod is not rescheduled if its node dies.
+        scored: true

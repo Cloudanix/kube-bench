@@ -1,0 +1,39 @@
+---
+controls:
+version: "cloudanix-1.0"
+id: 6
+text: "Cluster-wide Advisory Best Practices"
+type: "managedservices"
+groups:
+  - id: 6
+    text: "Advisory Controls"
+    checks:
+      - id: C6.1
+        text: "Audit logging is enabled and shipped off-cluster (Manual)"
+        severity: medium
+        type: "manual"
+        remediation: |
+          Enable Kubernetes API audit logging and forward the audit log to an
+          external, tamper-resistant store so control-plane activity is retained
+          independently of the cluster.
+        scored: false
+
+      - id: C6.2
+        text: "Secrets are encrypted at rest (Manual)"
+        severity: high
+        type: "manual"
+        remediation: |
+          Enable EncryptionConfiguration (KMS provider) for Secret resources so
+          etcd does not store secrets in plaintext. On managed control planes,
+          enable the provider's envelope/KMS encryption option.
+        scored: false
+
+      - id: C6.3
+        text: "An admission policy engine enforces workload policy (Manual)"
+        severity: medium
+        type: "manual"
+        remediation: |
+          Run an admission controller (Pod Security Admission, Kyverno, or OPA
+          Gatekeeper) so the C1-C5 best practices are enforced at admission time,
+          not only detected after the fact by this benchmark.
+        scored: false

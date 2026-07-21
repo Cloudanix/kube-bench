@@ -1,0 +1,3 @@
+---
+## Version-specific settings that override the values in cfg/config.yaml
+## cloudanix-1.0 (CBP) is API-only; no component bins/confs to override.

@@ -334,6 +334,7 @@ version_mapping:
   "rke2-cis-1.23": "rke2-cis-1.23"
   "rke2-cis-1.24": "rke2-cis-1.24"
   "oke-1.7.0": "oke-1.7.0"
+  "cloudanix-1.0": "cloudanix-1.0"
 
 target_mapping:
   "cis-1.5":
@@ -613,5 +614,8 @@ target_mapping:
   "oke-1.7.0":
     - "node"
     - "controlplane"
+    - "policies"
+    - "managedservices"
+  "cloudanix-1.0":
     - "policies"
     - "managedservices"
