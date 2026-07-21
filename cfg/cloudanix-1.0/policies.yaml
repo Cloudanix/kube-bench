@@ -18,7 +18,7 @@ groups:
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
             | .metadata.namespace as $ns | .metadata.name as $pod
             | ((.spec.containers // []) + (.spec.initContainers // []))[]
-            | "**privileged ns=\($ns) pod=\($pod) container=\(.name) is_compliant=\(if (.securityContext.privileged // false) then "false" else "true" end)"'
+            | "resource=Pod/\($ns)/\($pod) container=\(.name) is_compliant=\(if (.securityContext.privileged // false) then "false" else "true" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -41,7 +41,7 @@ groups:
           kubectl get pods --all-namespaces -o json | jq -r '
             .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
-            | "**hostns ns=\(.metadata.namespace) pod=\(.metadata.name) is_compliant=\(if ((.spec.hostPID // false) or (.spec.hostIPC // false) or (.spec.hostNetwork // false)) then "false" else "true" end)"'
+            | "resource=Pod/\(.metadata.namespace)/\(.metadata.name) is_compliant=\(if ((.spec.hostPID // false) or (.spec.hostIPC // false) or (.spec.hostNetwork // false)) then "false" else "true" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -66,7 +66,7 @@ groups:
             | .metadata.namespace as $ns | .metadata.name as $pod
             | (.spec.securityContext.runAsNonRoot // false) as $podNonRoot
             | ((.spec.containers // []) + (.spec.initContainers // []))[]
-            | "**nonroot ns=\($ns) pod=\($pod) container=\(.name) is_compliant=\(if ($podNonRoot or (.securityContext.runAsNonRoot // false)) then "true" else "false" end)"'
+            | "resource=Pod/\($ns)/\($pod) container=\(.name) is_compliant=\(if ($podNonRoot or (.securityContext.runAsNonRoot // false)) then "true" else "false" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -90,7 +90,7 @@ groups:
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
             | .metadata.namespace as $ns | .metadata.name as $pod
             | ((.spec.containers // []) + (.spec.initContainers // []))[]
-            | "**noprivesc ns=\($ns) pod=\($pod) container=\(.name) is_compliant=\(if (.securityContext.allowPrivilegeEscalation == false) then "true" else "false" end)"'
+            | "resource=Pod/\($ns)/\($pod) container=\(.name) is_compliant=\(if (.securityContext.allowPrivilegeEscalation == false) then "true" else "false" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -114,7 +114,7 @@ groups:
             | .metadata.namespace as $ns | .metadata.name as $pod
             | ((.spec.containers // []) + (.spec.initContainers // []))[]
             | (.securityContext.capabilities.drop // []) as $drop
-            | "**dropcaps ns=\($ns) pod=\($pod) container=\(.name) is_compliant=\(if (($drop | index("ALL")) or ($drop | index("all"))) then "true" else "false" end)"'
+            | "resource=Pod/\($ns)/\($pod) container=\(.name) is_compliant=\(if (($drop | index("ALL")) or ($drop | index("all"))) then "true" else "false" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -136,7 +136,7 @@ groups:
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
             | .metadata.namespace as $ns | .metadata.name as $pod
             | ((.spec.containers // []) + (.spec.initContainers // []))[]
-            | "**rorootfs ns=\($ns) pod=\($pod) container=\(.name) is_compliant=\(if (.securityContext.readOnlyRootFilesystem == true) then "true" else "false" end)"'
+            | "resource=Pod/\($ns)/\($pod) container=\(.name) is_compliant=\(if (.securityContext.readOnlyRootFilesystem == true) then "true" else "false" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -158,7 +158,7 @@ groups:
           kubectl get pods --all-namespaces -o json | jq -r '
             .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
-            | "**hostpath ns=\(.metadata.namespace) pod=\(.metadata.name) is_compliant=\(if ([ (.spec.volumes // [])[] | select(.hostPath != null) ] | length) > 0 then "false" else "true" end)"'
+            | "resource=Pod/\(.metadata.namespace)/\(.metadata.name) is_compliant=\(if ([ (.spec.volumes // [])[] | select(.hostPath != null) ] | length) > 0 then "false" else "true" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -180,7 +180,7 @@ groups:
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
             | .metadata.namespace as $ns | .metadata.name as $pod
             | (.spec.containers // [])[]
-            | "**limits ns=\($ns) pod=\($pod) container=\(.name) is_compliant=\(if ((.resources.limits.cpu != null) and (.resources.limits.memory != null)) then "true" else "false" end)"'
+            | "resource=Pod/\($ns)/\($pod) container=\(.name) is_compliant=\(if ((.resources.limits.cpu != null) and (.resources.limits.memory != null)) then "true" else "false" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -202,7 +202,7 @@ groups:
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
             | .metadata.namespace as $ns | .metadata.name as $pod
             | (.spec.containers // [])[]
-            | "**requests ns=\($ns) pod=\($pod) container=\(.name) is_compliant=\(if ((.resources.requests.cpu != null) and (.resources.requests.memory != null)) then "true" else "false" end)"'
+            | "resource=Pod/\($ns)/\($pod) container=\(.name) is_compliant=\(if ((.resources.requests.cpu != null) and (.resources.requests.memory != null)) then "true" else "false" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -226,7 +226,7 @@ groups:
             | ((.spec.containers // []) + (.spec.initContainers // []))[]
             | .image as $img
             | (($img | contains("@")) or (($img | split("/") | last | contains(":")) and (($img | endswith(":latest")) | not))) as $ok
-            | "**imagetag ns=\($ns) pod=\($pod) container=\(.name) is_compliant=\(if $ok then "true" else "false" end)"'
+            | "resource=Pod/\($ns)/\($pod) container=\(.name) is_compliant=\(if $ok then "true" else "false" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -250,7 +250,7 @@ groups:
             | ((.spec.containers // []) + (.spec.initContainers // []))[]
             | .image as $img
             | (($img | contains("@")) or (($img | split("/") | last | contains(":")) and (($img | endswith(":latest")) | not))) as $immutable
-            | "**pullpolicy ns=\($ns) pod=\($pod) container=\(.name) is_compliant=\(if ($immutable or (.imagePullPolicy == "Always")) then "true" else "false" end)"'
+            | "resource=Pod/\($ns)/\($pod) container=\(.name) is_compliant=\(if ($immutable or (.imagePullPolicy == "Always")) then "true" else "false" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -286,7 +286,7 @@ groups:
             | select(.roleRef.name == "cluster-admin")
             | .metadata.name as $crb
             | ((.subjects // [])[] | select(.kind == "ServiceAccount"))
-            | "**clusteradmin crb=\($crb) sa=\(.namespace)/\(.name) is_compliant=false"'
+            | "resource=ClusterRoleBinding/\($crb) sa=\(.namespace)/\(.name) is_compliant=false"'
         use_multiple_values: true
         tests:
           test_items:
@@ -310,7 +310,7 @@ groups:
           kubectl get pods --all-namespaces -o json | jq -r '
             .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
-            | "**automount ns=\(.metadata.namespace) pod=\(.metadata.name) is_compliant=\(if (.spec.automountServiceAccountToken == false) then "true" else "false" end)"'
+            | "resource=Pod/\(.metadata.namespace)/\(.metadata.name) is_compliant=\(if (.spec.automountServiceAccountToken == false) then "true" else "false" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -345,7 +345,7 @@ groups:
             .items[]
             | .kind as $kind | .metadata.name as $name
             | ((.subjects // [])[] | select(.name == "system:anonymous" or .name == "system:unauthenticated"))
-            | "**anon kind=\($kind) name=\($name) subject=\(.name) is_compliant=false"'
+            | "resource=\($kind)/\($name) subject=\(.name) is_compliant=false"'
         use_multiple_values: true
         tests:
           test_items:
@@ -376,7 +376,7 @@ groups:
                  | select(.metadata.namespace == $ns)
                  | select((.spec.podSelector == {}) or (.spec.podSelector.matchLabels == null and .spec.podSelector.matchExpressions == null))
                  | select((.spec.policyTypes // []) | index("Ingress")) ] | length) as $deny
-            | "**netpol ns=\($ns) is_compliant=\(if $deny > 0 then "true" else "false" end)"'
+            | "resource=Namespace/\($ns) is_compliant=\(if $deny > 0 then "true" else "false" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -396,7 +396,7 @@ groups:
         references: ["cis:5.6.4", "eks:4.5.2", "aks:4.5.2"]
         audit: |
           kubectl get pods -n default -o json | jq -r '
-            "**defaultns is_compliant=\(if ((.items // []) | length) == 0 then "true" else "false" end)"'
+            "resource=Namespace/default is_compliant=\(if ((.items // []) | length) == 0 then "true" else "false" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -418,7 +418,7 @@ groups:
             .items[]
             | select(.metadata.name as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
             | (.metadata.labels["pod-security.kubernetes.io/enforce"] // "") as $lvl
-            | "**psa ns=\(.metadata.name) is_compliant=\(if ($lvl == "baseline" or $lvl == "restricted") then "true" else "false" end)"'
+            | "resource=Namespace/\(.metadata.name) is_compliant=\(if ($lvl == "baseline" or $lvl == "restricted") then "true" else "false" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -456,7 +456,7 @@ groups:
             | .name as $c
             | (.env // [])[]
             | select((.value != null) and (.name | test("PASSWORD|SECRET|TOKEN|APIKEY|API_KEY|CREDENTIAL|PRIVATE_KEY"; "i")))
-            | "**literalsecret ns=\($ns) pod=\($pod) container=\($c) env=\(.name) is_compliant=false"'
+            | "resource=Pod/\($ns)/\($pod) container=\($c) env=\(.name) is_compliant=false"'
         use_multiple_values: true
         tests:
           test_items:
@@ -498,7 +498,7 @@ groups:
           kubectl get pods --all-namespaces -o json | jq -r '
             .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
-            | "**owner ns=\(.metadata.namespace) pod=\(.metadata.name) is_compliant=\(if ([ (.metadata.ownerReferences // [])[] | select(.controller == true) ] | length) > 0 then "true" else "false" end)"'
+            | "resource=Pod/\(.metadata.namespace)/\(.metadata.name) is_compliant=\(if ([ (.metadata.ownerReferences // [])[] | select(.controller == true) ] | length) > 0 then "true" else "false" end)"'
         use_multiple_values: true
         tests:
           test_items:
