@@ -16,3 +16,8 @@ thumbs.db
 *.iml
 
 build.log
+
+spotter
+
+# Cloudanix internal design docs — not for the public repo
+docs-internal/
