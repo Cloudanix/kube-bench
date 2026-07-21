@@ -11,6 +11,7 @@ groups:
       - id: C1.1
         text: "No container runs in privileged mode (Automated)"
         severity: critical
+        references: ["cis:5.2.2", "eks:4.2.1", "aks:4.2.1"]
         audit: |
           kubectl get pods --all-namespaces -o json | jq -r '
             .items[]
@@ -35,6 +36,7 @@ groups:
       - id: C1.2
         text: "No pod shares a host namespace (hostPID/hostIPC/hostNetwork) (Automated)"
         severity: critical
+        references: ["cis:5.2.3", "cis:5.2.4", "cis:5.2.5", "eks:4.2.2", "eks:4.2.3", "eks:4.2.4", "aks:4.2.2", "aks:4.2.3", "aks:4.2.4"]
         audit: |
           kubectl get pods --all-namespaces -o json | jq -r '
             .items[]
@@ -56,6 +58,7 @@ groups:
       - id: C1.3
         text: "Containers run as non-root (Automated)"
         severity: high
+        references: ["cis:5.2.7"]
         audit: |
           kubectl get pods --all-namespaces -o json | jq -r '
             .items[]
@@ -80,6 +83,7 @@ groups:
       - id: C1.4
         text: "Containers disallow privilege escalation (Automated)"
         severity: high
+        references: ["cis:5.2.6", "eks:4.2.5", "aks:4.2.5"]
         audit: |
           kubectl get pods --all-namespaces -o json | jq -r '
             .items[]
@@ -102,6 +106,7 @@ groups:
       - id: C1.5
         text: "Containers drop ALL capabilities (Automated)"
         severity: high
+        references: ["cis:5.2.9", "cis:5.2.10"]
         audit: |
           kubectl get pods --all-namespaces -o json | jq -r '
             .items[]
@@ -148,6 +153,7 @@ groups:
       - id: C1.7
         text: "Pods do not mount hostPath volumes (Automated)"
         severity: high
+        references: ["cis:5.2.12"]
         audit: |
           kubectl get pods --all-namespaces -o json | jq -r '
             .items[]
@@ -273,6 +279,7 @@ groups:
       - id: C2.1
         text: "No ServiceAccount is bound to cluster-admin (Automated)"
         severity: critical
+        references: ["cis:5.1.1", "eks:4.1.1", "gke:4.1.1", "aks:4.1.1"]
         audit: |
           kubectl get clusterrolebindings -o json | jq -r '
             .items[]
@@ -298,6 +305,7 @@ groups:
       - id: C2.2
         text: "Pods that don't need the API disable token automount (Automated)"
         severity: medium
+        references: ["cis:5.1.6", "eks:4.1.6", "gke:4.1.5", "aks:4.1.6"]
         audit: |
           kubectl get pods --all-namespaces -o json | jq -r '
             .items[]
@@ -331,6 +339,7 @@ groups:
       - id: C2.4
         text: "No RoleBinding grants access to anonymous/unauthenticated (Automated)"
         severity: critical
+        references: ["gke:4.1.8", "gke:4.1.9"]
         audit: |
           kubectl get rolebindings,clusterrolebindings --all-namespaces -o json | jq -r '
             .items[]
@@ -356,6 +365,7 @@ groups:
       - id: C3.1
         text: "Every non-system namespace has a default-deny NetworkPolicy (Automated)"
         severity: high
+        references: ["cis:5.3.2", "eks:4.3.2", "gke:4.3.2", "aks:4.4.2"]
         audit: |
           nps=$(kubectl get networkpolicies --all-namespaces -o json)
           kubectl get namespaces -o json | jq -r --argjson nps "$nps" '
@@ -383,6 +393,7 @@ groups:
       - id: C3.2
         text: "No workloads run in the default namespace (Automated)"
         severity: medium
+        references: ["cis:5.6.4", "eks:4.5.2", "aks:4.5.2"]
         audit: |
           kubectl get pods -n default -o json | jq -r '
             "**defaultns is_compliant=\(if ((.items // []) | length) == 0 then "true" else "false" end)"'
@@ -401,6 +412,7 @@ groups:
       - id: C3.3
         text: "Namespaces enforce Pod Security Admission (baseline or stricter) (Automated)"
         severity: high
+        references: ["cis:5.2.1"]
         audit: |
           kubectl get namespaces -o json | jq -r '
             .items[]

@@ -82,6 +82,10 @@ type Check struct {
 	ExpectedResult    string `json:"expected_result"`
 	Reason            string `json:"reason,omitempty"`
 	Severity          string `yaml:"severity" json:"severity,omitempty"`
+	// References lists equivalent checks in other benchmarks as "family:id"
+	// tokens (e.g. "eks:4.2.1"), used downstream to dedupe the same finding when
+	// CBP is co-run with a platform benchmark. See docs-internal/misconfig-cbp.
+	References         []string `yaml:"references" json:"references,omitempty"`
 	AuditOutput       string `json:"-"`
 	AuditEnvOutput    string `json:"-"`
 	AuditConfigOutput string `json:"-"`
