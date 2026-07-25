@@ -101,8 +101,8 @@ groups:
           If using executable arguments, edit the kubelet service file on each worker node and
           ensure the below parameters are part of the KUBELET_ARGS variable string.
 
-          For systems using systemd, such as the Amazon EKS Optimised Amazon Linux or
-          Bottlerocket AMIs, then this file can be found at
+          For systems using systemd, such as the GKE Container-Optimized OS or
+          Ubuntu node images, then this file can be found at
           /etc/systemd/system/kubelet.service.d/10-kubelet-args.conf. Otherwise,
           you may need to look up documentation for your chosen operating system to determine
           which service manager is configured:
@@ -111,8 +111,8 @@ groups:
 
           For Both Remediation Steps:
           Based on your system, restart the kubelet service and check the service status.
-          The following example is for operating systems using systemd, such as the Amazon
-          EKS Optimised Amazon Linux or Bottlerocket AMIs, and invokes the systemctl
+          The following example is for operating systems using systemd, such as the GKE
+          Container-Optimized OS or Ubuntu node images, and invokes the systemctl
           command. If systemctl is not available then you will need to look up documentation for
           your chosen operating system to determine which service manager is configured:
             systemctl daemon-reload
@@ -160,8 +160,8 @@ groups:
           Remediation Method 2:
           If using executable arguments, edit the kubelet service file on each worker node and
           ensure the below parameters are part of the KUBELET_ARGS variable string.
-          For systems using systemd, such as the Amazon EKS Optimised Amazon Linux or
-          Bottlerocket AMIs, then this file can be found at
+          For systems using systemd, such as the GKE Container-Optimized OS or
+          Ubuntu node images, then this file can be found at
           /etc/systemd/system/kubelet.service.d/10-kubelet-args.conf. Otherwise,
           you may need to look up documentation for your chosen operating system to determine
           which service manager is configured:
@@ -171,8 +171,8 @@ groups:
 
           For Both Remediation Steps:
           Based on your system, restart the kubelet service and check the service status.
-          The following example is for operating systems using systemd, such as the Amazon
-          EKS Optimised Amazon Linux or Bottlerocket AMIs, and invokes the systemctl
+          The following example is for operating systems using systemd, such as the GKE
+          Container-Optimized OS or Ubuntu node images, and invokes the systemctl
           command. If systemctl is not available then you will need to look up documentation for
           your chosen operating system to determine which service manager is configured:
 
@@ -213,8 +213,8 @@ groups:
           Remediation Method 2:
           If using executable arguments, edit the kubelet service file on each worker node and
           ensure the below parameters are part of the KUBELET_ARGS variable string.
-          For systems using systemd, such as the Amazon EKS Optimised Amazon Linux or
-          Bottlerocket AMIs, then this file can be found at
+          For systems using systemd, such as the GKE Container-Optimized OS or
+          Ubuntu node images, then this file can be found at
           /etc/systemd/system/kubelet.service.d/10-kubelet-args.conf. Otherwise,
           you may need to look up documentation for your chosen operating system to determine
           which service manager is configured:
@@ -223,8 +223,8 @@ groups:
 
           For Both Remediation Steps:
           Based on your system, restart the kubelet service and check the service status.
-          The following example is for operating systems using systemd, such as the Amazon
-          EKS Optimised Amazon Linux or Bottlerocket AMIs, and invokes the systemctl
+          The following example is for operating systems using systemd, such as the GKE
+          Container-Optimized OS or Ubuntu node images, and invokes the systemctl
           command. If systemctl is not available then you will need to look up documentation for
           your chosen operating system to determine which service manager is configured:
 
