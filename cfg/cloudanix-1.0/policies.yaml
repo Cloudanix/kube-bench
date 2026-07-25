@@ -4,6 +4,10 @@ version: "cloudanix-1.0"
 id: 1
 text: "Workload & Tenancy Best Practices"
 type: "policies"
+# Audit rows are space-separated key=value tokens. `kind=` marks the row as a Kubernetes
+# object and drives check.FailedResource; any key that is not reserved lands in `attributes`.
+# Optional tokens are omitted rather than emitted empty — jq renders a missing field as the
+# literal string "null". See docs-internal/misconfig-cbp/failed-resources.md.
 groups:
   - id: 1
     text: "Workload Security (Pod & Container Spec)"
@@ -16,9 +20,19 @@ groups:
           kubectl get pods --all-namespaces -o json | jq -r '
             .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
-            | .metadata.namespace as $ns | .metadata.name as $pod
+            | .metadata as $m
+            | (.spec.nodeName // "") as $node
+            | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
+            | ([ ($m.ownerReferences // [])[] | select(.controller) ] | first) as $own
             | ((.spec.containers // []) + (.spec.initContainers // []))[]
-            | "resource=Pod/\($ns)/\($pod) container=\(.name) is_compliant=\(if (.securityContext.privileged // false) then "false" else "true" end)"'
+            | (.securityContext.privileged // false) as $priv
+            | "kind=Pod ns=\($m.namespace) name=\($m.name) uid=\($m.uid) apiVersion=v1"
+              + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+              + (if $node   == ""   then "" else " node=\($node)" end)
+              + (if $labels == ""   then "" else " labels=\($labels)" end)
+              + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
+              + " container=\(.name) image=\(.image) privileged=\($priv)"
+              + " is_compliant=\(if $priv then "false" else "true" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -41,7 +55,20 @@ groups:
           kubectl get pods --all-namespaces -o json | jq -r '
             .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
-            | "resource=Pod/\(.metadata.namespace)/\(.metadata.name) is_compliant=\(if ((.spec.hostPID // false) or (.spec.hostIPC // false) or (.spec.hostNetwork // false)) then "false" else "true" end)"'
+            | .metadata as $m
+            | (.spec.nodeName // "") as $node
+            | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
+            | ([ ($m.ownerReferences // [])[] | select(.controller) ] | first) as $own
+            | (.spec.hostPID // false) as $hostPID
+            | (.spec.hostIPC // false) as $hostIPC
+            | (.spec.hostNetwork // false) as $hostNet
+            | "kind=Pod ns=\($m.namespace) name=\($m.name) uid=\($m.uid) apiVersion=v1"
+              + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+              + (if $node   == ""   then "" else " node=\($node)" end)
+              + (if $labels == ""   then "" else " labels=\($labels)" end)
+              + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
+              + " hostPID=\($hostPID) hostIPC=\($hostIPC) hostNetwork=\($hostNet)"
+              + " is_compliant=\(if ($hostPID or $hostIPC or $hostNet) then "false" else "true" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -63,10 +90,20 @@ groups:
           kubectl get pods --all-namespaces -o json | jq -r '
             .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
-            | .metadata.namespace as $ns | .metadata.name as $pod
+            | .metadata as $m
+            | (.spec.nodeName // "") as $node
+            | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
+            | ([ ($m.ownerReferences // [])[] | select(.controller) ] | first) as $own
             | (.spec.securityContext.runAsNonRoot // false) as $podNonRoot
             | ((.spec.containers // []) + (.spec.initContainers // []))[]
-            | "resource=Pod/\($ns)/\($pod) container=\(.name) is_compliant=\(if ($podNonRoot or (.securityContext.runAsNonRoot // false)) then "true" else "false" end)"'
+            | ($podNonRoot or (.securityContext.runAsNonRoot // false)) as $ok
+            | "kind=Pod ns=\($m.namespace) name=\($m.name) uid=\($m.uid) apiVersion=v1"
+              + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+              + (if $node   == ""   then "" else " node=\($node)" end)
+              + (if $labels == ""   then "" else " labels=\($labels)" end)
+              + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
+              + " container=\(.name) image=\(.image) runAsNonRoot=\($ok)"
+              + " is_compliant=\(if $ok then "true" else "false" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -88,9 +125,20 @@ groups:
           kubectl get pods --all-namespaces -o json | jq -r '
             .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
-            | .metadata.namespace as $ns | .metadata.name as $pod
+            | .metadata as $m
+            | (.spec.nodeName // "") as $node
+            | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
+            | ([ ($m.ownerReferences // [])[] | select(.controller) ] | first) as $own
             | ((.spec.containers // []) + (.spec.initContainers // []))[]
-            | "resource=Pod/\($ns)/\($pod) container=\(.name) is_compliant=\(if (.securityContext.allowPrivilegeEscalation == false) then "true" else "false" end)"'
+            | (.securityContext.allowPrivilegeEscalation == false) as $ok
+            | "kind=Pod ns=\($m.namespace) name=\($m.name) uid=\($m.uid) apiVersion=v1"
+              + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+              + (if $node   == ""   then "" else " node=\($node)" end)
+              + (if $labels == ""   then "" else " labels=\($labels)" end)
+              + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
+              + " container=\(.name) image=\(.image)"
+              + " allowPrivilegeEscalation=\(.securityContext.allowPrivilegeEscalation // "unset")"
+              + " is_compliant=\(if $ok then "true" else "false" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -111,10 +159,21 @@ groups:
           kubectl get pods --all-namespaces -o json | jq -r '
             .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
-            | .metadata.namespace as $ns | .metadata.name as $pod
+            | .metadata as $m
+            | (.spec.nodeName // "") as $node
+            | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
+            | ([ ($m.ownerReferences // [])[] | select(.controller) ] | first) as $own
             | ((.spec.containers // []) + (.spec.initContainers // []))[]
             | (.securityContext.capabilities.drop // []) as $drop
-            | "resource=Pod/\($ns)/\($pod) container=\(.name) is_compliant=\(if (($drop | index("ALL")) or ($drop | index("all"))) then "true" else "false" end)"'
+            | (($drop | index("ALL")) or ($drop | index("all"))) as $ok
+            | "kind=Pod ns=\($m.namespace) name=\($m.name) uid=\($m.uid) apiVersion=v1"
+              + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+              + (if $node   == ""   then "" else " node=\($node)" end)
+              + (if $labels == ""   then "" else " labels=\($labels)" end)
+              + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
+              + " container=\(.name) image=\(.image)"
+              + " capabilitiesDrop=\(if ($drop | length) == 0 then "none" else ($drop | join("+")) end)"
+              + " is_compliant=\(if $ok then "true" else "false" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -134,9 +193,20 @@ groups:
           kubectl get pods --all-namespaces -o json | jq -r '
             .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
-            | .metadata.namespace as $ns | .metadata.name as $pod
+            | .metadata as $m
+            | (.spec.nodeName // "") as $node
+            | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
+            | ([ ($m.ownerReferences // [])[] | select(.controller) ] | first) as $own
             | ((.spec.containers // []) + (.spec.initContainers // []))[]
-            | "resource=Pod/\($ns)/\($pod) container=\(.name) is_compliant=\(if (.securityContext.readOnlyRootFilesystem == true) then "true" else "false" end)"'
+            | (.securityContext.readOnlyRootFilesystem == true) as $ok
+            | "kind=Pod ns=\($m.namespace) name=\($m.name) uid=\($m.uid) apiVersion=v1"
+              + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+              + (if $node   == ""   then "" else " node=\($node)" end)
+              + (if $labels == ""   then "" else " labels=\($labels)" end)
+              + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
+              + " container=\(.name) image=\(.image)"
+              + " readOnlyRootFilesystem=\(.securityContext.readOnlyRootFilesystem // "unset")"
+              + " is_compliant=\(if $ok then "true" else "false" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -158,7 +228,18 @@ groups:
           kubectl get pods --all-namespaces -o json | jq -r '
             .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
-            | "resource=Pod/\(.metadata.namespace)/\(.metadata.name) is_compliant=\(if ([ (.spec.volumes // [])[] | select(.hostPath != null) ] | length) > 0 then "false" else "true" end)"'
+            | .metadata as $m
+            | (.spec.nodeName // "") as $node
+            | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
+            | ([ ($m.ownerReferences // [])[] | select(.controller) ] | first) as $own
+            | [ (.spec.volumes // [])[] | select(.hostPath != null) ] as $hp
+            | "kind=Pod ns=\($m.namespace) name=\($m.name) uid=\($m.uid) apiVersion=v1"
+              + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+              + (if $node   == ""   then "" else " node=\($node)" end)
+              + (if $labels == ""   then "" else " labels=\($labels)" end)
+              + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
+              + (if ($hp | length) == 0 then "" else " hostPaths=\([ $hp[] | .hostPath.path ] | join("+"))" end)
+              + " is_compliant=\(if ($hp | length) > 0 then "false" else "true" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -178,9 +259,20 @@ groups:
           kubectl get pods --all-namespaces -o json | jq -r '
             .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
-            | .metadata.namespace as $ns | .metadata.name as $pod
+            | .metadata as $m
+            | (.spec.nodeName // "") as $node
+            | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
+            | ([ ($m.ownerReferences // [])[] | select(.controller) ] | first) as $own
             | (.spec.containers // [])[]
-            | "resource=Pod/\($ns)/\($pod) container=\(.name) is_compliant=\(if ((.resources.limits.cpu != null) and (.resources.limits.memory != null)) then "true" else "false" end)"'
+            | ((.resources.limits.cpu != null) and (.resources.limits.memory != null)) as $ok
+            | "kind=Pod ns=\($m.namespace) name=\($m.name) uid=\($m.uid) apiVersion=v1"
+              + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+              + (if $node   == ""   then "" else " node=\($node)" end)
+              + (if $labels == ""   then "" else " labels=\($labels)" end)
+              + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
+              + " container=\(.name) image=\(.image)"
+              + " limitsCpu=\(.resources.limits.cpu // "unset") limitsMemory=\(.resources.limits.memory // "unset")"
+              + " is_compliant=\(if $ok then "true" else "false" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -200,9 +292,20 @@ groups:
           kubectl get pods --all-namespaces -o json | jq -r '
             .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
-            | .metadata.namespace as $ns | .metadata.name as $pod
+            | .metadata as $m
+            | (.spec.nodeName // "") as $node
+            | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
+            | ([ ($m.ownerReferences // [])[] | select(.controller) ] | first) as $own
             | (.spec.containers // [])[]
-            | "resource=Pod/\($ns)/\($pod) container=\(.name) is_compliant=\(if ((.resources.requests.cpu != null) and (.resources.requests.memory != null)) then "true" else "false" end)"'
+            | ((.resources.requests.cpu != null) and (.resources.requests.memory != null)) as $ok
+            | "kind=Pod ns=\($m.namespace) name=\($m.name) uid=\($m.uid) apiVersion=v1"
+              + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+              + (if $node   == ""   then "" else " node=\($node)" end)
+              + (if $labels == ""   then "" else " labels=\($labels)" end)
+              + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
+              + " container=\(.name) image=\(.image)"
+              + " requestsCpu=\(.resources.requests.cpu // "unset") requestsMemory=\(.resources.requests.memory // "unset")"
+              + " is_compliant=\(if $ok then "true" else "false" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -222,11 +325,20 @@ groups:
           kubectl get pods --all-namespaces -o json | jq -r '
             .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
-            | .metadata.namespace as $ns | .metadata.name as $pod
+            | .metadata as $m
+            | (.spec.nodeName // "") as $node
+            | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
+            | ([ ($m.ownerReferences // [])[] | select(.controller) ] | first) as $own
             | ((.spec.containers // []) + (.spec.initContainers // []))[]
             | .image as $img
             | (($img | contains("@")) or (($img | split("/") | last | contains(":")) and (($img | endswith(":latest")) | not))) as $ok
-            | "resource=Pod/\($ns)/\($pod) container=\(.name) is_compliant=\(if $ok then "true" else "false" end)"'
+            | "kind=Pod ns=\($m.namespace) name=\($m.name) uid=\($m.uid) apiVersion=v1"
+              + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+              + (if $node   == ""   then "" else " node=\($node)" end)
+              + (if $labels == ""   then "" else " labels=\($labels)" end)
+              + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
+              + " container=\(.name) image=\($img)"
+              + " is_compliant=\(if $ok then "true" else "false" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -246,11 +358,21 @@ groups:
           kubectl get pods --all-namespaces -o json | jq -r '
             .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
-            | .metadata.namespace as $ns | .metadata.name as $pod
+            | .metadata as $m
+            | (.spec.nodeName // "") as $node
+            | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
+            | ([ ($m.ownerReferences // [])[] | select(.controller) ] | first) as $own
             | ((.spec.containers // []) + (.spec.initContainers // []))[]
             | .image as $img
             | (($img | contains("@")) or (($img | split("/") | last | contains(":")) and (($img | endswith(":latest")) | not))) as $immutable
-            | "resource=Pod/\($ns)/\($pod) container=\(.name) is_compliant=\(if ($immutable or (.imagePullPolicy == "Always")) then "true" else "false" end)"'
+            | ($immutable or (.imagePullPolicy == "Always")) as $ok
+            | "kind=Pod ns=\($m.namespace) name=\($m.name) uid=\($m.uid) apiVersion=v1"
+              + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+              + (if $node   == ""   then "" else " node=\($node)" end)
+              + (if $labels == ""   then "" else " labels=\($labels)" end)
+              + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
+              + " container=\(.name) image=\($img) imagePullPolicy=\(.imagePullPolicy // "unset")"
+              + " is_compliant=\(if $ok then "true" else "false" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -282,11 +404,15 @@ groups:
         references: ["cis:5.1.1", "eks:4.1.1", "gke:4.1.1", "aks:4.1.1"]
         audit: |
           kubectl get clusterrolebindings -o json | jq -r '
-            .items[]
-            | select(.roleRef.name == "cluster-admin")
-            | .metadata.name as $crb
-            | ((.subjects // [])[] | select(.kind == "ServiceAccount"))
-            | "resource=ClusterRoleBinding/\($crb) sa=\(.namespace)/\(.name) is_compliant=false"'
+            [ .items[]
+              | select(.roleRef.name == "cluster-admin")
+              | .metadata as $m
+              | ((.subjects // [])[] | select(.kind == "ServiceAccount"))
+              | "kind=ClusterRoleBinding name=\($m.name) uid=\($m.uid) apiVersion=rbac.authorization.k8s.io/v1"
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + " sa=\(.namespace)/\(.name) roleRef=cluster-admin is_compliant=false"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
         use_multiple_values: true
         tests:
           test_items:
@@ -298,8 +424,8 @@ groups:
           Do not bind ServiceAccounts to the cluster-admin ClusterRole. Grant a
           narrowly-scoped Role/ClusterRole with only the verbs the workload needs,
           then delete the binding: kubectl delete clusterrolebinding [name].
-          Note: this check only emits non-compliant lines; if none are emitted the
-          check passes.
+          This check emits one row per violation; a clean cluster emits the
+          `is_compliant=true` sentinel and passes.
         scored: true
 
       - id: C2.2
@@ -310,7 +436,19 @@ groups:
           kubectl get pods --all-namespaces -o json | jq -r '
             .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
-            | "resource=Pod/\(.metadata.namespace)/\(.metadata.name) is_compliant=\(if (.spec.automountServiceAccountToken == false) then "true" else "false" end)"'
+            | .metadata as $m
+            | (.spec.nodeName // "") as $node
+            | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
+            | ([ ($m.ownerReferences // [])[] | select(.controller) ] | first) as $own
+            | (.spec.automountServiceAccountToken == false) as $ok
+            | "kind=Pod ns=\($m.namespace) name=\($m.name) uid=\($m.uid) apiVersion=v1"
+              + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+              + (if $node   == ""   then "" else " node=\($node)" end)
+              + (if $labels == ""   then "" else " labels=\($labels)" end)
+              + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
+              + " serviceAccount=\(.spec.serviceAccountName // "default")"
+              + " automountServiceAccountToken=\(.spec.automountServiceAccountToken // "unset")"
+              + " is_compliant=\(if $ok then "true" else "false" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -342,10 +480,17 @@ groups:
         references: ["gke:4.1.8", "gke:4.1.9"]
         audit: |
           kubectl get rolebindings,clusterrolebindings --all-namespaces -o json | jq -r '
-            .items[]
-            | .kind as $kind | .metadata.name as $name
-            | ((.subjects // [])[] | select(.name == "system:anonymous" or .name == "system:unauthenticated"))
-            | "resource=\($kind)/\($name) subject=\(.name) is_compliant=false"'
+            [ .items[]
+              | .kind as $kind | .apiVersion as $api | .metadata as $m
+              | ((.subjects // [])[] | select(.name == "system:anonymous" or .name == "system:unauthenticated"))
+              | "kind=\($kind)"
+                + (if ($m.namespace // "") == "" then "" else " ns=\($m.namespace)" end)
+                + " name=\($m.name) uid=\($m.uid)"
+                + (if ($api // "") == "" then "" else " apiVersion=\($api)" end)
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + " subject=\(.name) is_compliant=false"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
         use_multiple_values: true
         tests:
           test_items:
@@ -356,7 +501,8 @@ groups:
         remediation: |
           Delete any (Cluster)RoleBinding whose subject is `system:anonymous` or the
           `system:unauthenticated` group. These grant access to unauthenticated
-          callers. If none are emitted the check passes.
+          callers. This check emits one row per violation; a clean cluster emits the
+          `is_compliant=true` sentinel and passes.
         scored: true
 
   - id: 3
@@ -371,12 +517,17 @@ groups:
           kubectl get namespaces -o json | jq -r --argjson nps "$nps" '
             .items[]
             | select(.metadata.name as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
-            | .metadata.name as $ns
+            | .metadata as $m
+            | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
             | ([ $nps.items[]
-                 | select(.metadata.namespace == $ns)
+                 | select(.metadata.namespace == $m.name)
                  | select((.spec.podSelector == {}) or (.spec.podSelector.matchLabels == null and .spec.podSelector.matchExpressions == null))
                  | select((.spec.policyTypes // []) | index("Ingress")) ] | length) as $deny
-            | "resource=Namespace/\($ns) is_compliant=\(if $deny > 0 then "true" else "false" end)"'
+            | "kind=Namespace name=\($m.name) uid=\($m.uid) apiVersion=v1"
+              + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+              + (if $labels == "" then "" else " labels=\($labels)" end)
+              + " defaultDenyPolicies=\($deny)"
+              + " is_compliant=\(if $deny > 0 then "true" else "false" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -395,8 +546,16 @@ groups:
         severity: medium
         references: ["cis:5.6.4", "eks:4.5.2", "aks:4.5.2"]
         audit: |
-          kubectl get pods -n default -o json | jq -r '
-            "resource=Namespace/default is_compliant=\(if ((.items // []) | length) == 0 then "true" else "false" end)"'
+          pods=$(kubectl get pods -n default -o json)
+          kubectl get namespace default -o json | jq -r --argjson pods "$pods" '
+            .metadata as $m
+            | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
+            | (($pods.items // []) | length) as $count
+            | "kind=Namespace name=default uid=\($m.uid) apiVersion=v1"
+              + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+              + (if $labels == "" then "" else " labels=\($labels)" end)
+              + " podCount=\($count)"
+              + " is_compliant=\(if $count == 0 then "true" else "false" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -417,8 +576,14 @@ groups:
           kubectl get namespaces -o json | jq -r '
             .items[]
             | select(.metadata.name as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
-            | (.metadata.labels["pod-security.kubernetes.io/enforce"] // "") as $lvl
-            | "resource=Namespace/\(.metadata.name) is_compliant=\(if ($lvl == "baseline" or $lvl == "restricted") then "true" else "false" end)"'
+            | .metadata as $m
+            | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
+            | (($m.labels // {})["pod-security.kubernetes.io/enforce"] // "") as $lvl
+            | "kind=Namespace name=\($m.name) uid=\($m.uid) apiVersion=v1"
+              + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+              + (if $labels == "" then "" else " labels=\($labels)" end)
+              + " enforce=\(if $lvl == "" then "none" else $lvl end)"
+              + " is_compliant=\(if ($lvl == "baseline" or $lvl == "restricted") then "true" else "false" end)"'
         use_multiple_values: true
         tests:
           test_items:
@@ -449,14 +614,24 @@ groups:
         severity: medium
         audit: |
           kubectl get pods --all-namespaces -o json | jq -r '
-            .items[]
-            | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
-            | .metadata.namespace as $ns | .metadata.name as $pod
-            | ((.spec.containers // []) + (.spec.initContainers // []))[]
-            | .name as $c
-            | (.env // [])[]
-            | select((.value != null) and (.name | test("PASSWORD|SECRET|TOKEN|APIKEY|API_KEY|CREDENTIAL|PRIVATE_KEY"; "i")))
-            | "resource=Pod/\($ns)/\($pod) container=\($c) env=\(.name) is_compliant=false"'
+            [ .items[]
+              | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
+              | .metadata as $m
+              | (.spec.nodeName // "") as $node
+              | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
+              | ([ ($m.ownerReferences // [])[] | select(.controller) ] | first) as $own
+              | ((.spec.containers // []) + (.spec.initContainers // []))[]
+              | .name as $c
+              | (.env // [])[]
+              | select((.value != null) and (.name | test("PASSWORD|SECRET|TOKEN|APIKEY|API_KEY|CREDENTIAL|PRIVATE_KEY"; "i")))
+              | "kind=Pod ns=\($m.namespace) name=\($m.name) uid=\($m.uid) apiVersion=v1"
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + (if $node   == ""   then "" else " node=\($node)" end)
+                + (if $labels == ""   then "" else " labels=\($labels)" end)
+                + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
+                + " container=\($c) env=\(.name) is_compliant=false"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
         use_multiple_values: true
         tests:
           test_items:
@@ -467,7 +642,9 @@ groups:
         remediation: |
           Reference secrets via `valueFrom.secretKeyRef` or a mounted Secret volume
           instead of a literal `value:`. Literal values land in the pod manifest,
-          logs and `kubectl describe`. If none are emitted the check passes.
+          logs and `kubectl describe`. Only the variable name is reported, never its
+          value. This check emits one row per violation; a clean cluster emits the
+          `is_compliant=true` sentinel and passes.
         scored: true
 
       - id: C4.2
@@ -498,7 +675,16 @@ groups:
           kubectl get pods --all-namespaces -o json | jq -r '
             .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
-            | "resource=Pod/\(.metadata.namespace)/\(.metadata.name) is_compliant=\(if ([ (.metadata.ownerReferences // [])[] | select(.controller == true) ] | length) > 0 then "true" else "false" end)"'
+            | .metadata as $m
+            | (.spec.nodeName // "") as $node
+            | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
+            | ([ ($m.ownerReferences // [])[] | select(.controller) ] | first) as $own
+            | "kind=Pod ns=\($m.namespace) name=\($m.name) uid=\($m.uid) apiVersion=v1"
+              + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+              + (if $node   == ""   then "" else " node=\($node)" end)
+              + (if $labels == ""   then "" else " labels=\($labels)" end)
+              + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
+              + " is_compliant=\(if $own == null then "false" else "true" end)"'
         use_multiple_values: true
         tests:
           test_items:
