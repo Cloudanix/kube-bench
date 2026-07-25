@@ -18,7 +18,7 @@ groups:
         references: ["cis:5.2.2", "eks:4.2.1", "aks:4.2.1"]
         audit: |
           kubectl get pods --all-namespaces -o json | jq -r '
-            .items[]
+            [ .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
             | .metadata as $m
             | (.spec.nodeName // "") as $node
@@ -32,7 +32,9 @@ groups:
               + (if $labels == ""   then "" else " labels=\($labels)" end)
               + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
               + " container=\(.name) image=\(.image) privileged=\($priv)"
-              + " is_compliant=\(if $priv then "false" else "true" end)"'
+              + " is_compliant=\(if $priv then "false" else "true" end)"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
         use_multiple_values: true
         tests:
           test_items:
@@ -53,7 +55,7 @@ groups:
         references: ["cis:5.2.3", "cis:5.2.4", "cis:5.2.5", "eks:4.2.2", "eks:4.2.3", "eks:4.2.4", "aks:4.2.2", "aks:4.2.3", "aks:4.2.4"]
         audit: |
           kubectl get pods --all-namespaces -o json | jq -r '
-            .items[]
+            [ .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
             | .metadata as $m
             | (.spec.nodeName // "") as $node
@@ -68,7 +70,9 @@ groups:
               + (if $labels == ""   then "" else " labels=\($labels)" end)
               + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
               + " hostPID=\($hostPID) hostIPC=\($hostIPC) hostNetwork=\($hostNet)"
-              + " is_compliant=\(if ($hostPID or $hostIPC or $hostNet) then "false" else "true" end)"'
+              + " is_compliant=\(if ($hostPID or $hostIPC or $hostNet) then "false" else "true" end)"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
         use_multiple_values: true
         tests:
           test_items:
@@ -88,7 +92,7 @@ groups:
         references: ["cis:5.2.7"]
         audit: |
           kubectl get pods --all-namespaces -o json | jq -r '
-            .items[]
+            [ .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
             | .metadata as $m
             | (.spec.nodeName // "") as $node
@@ -103,7 +107,9 @@ groups:
               + (if $labels == ""   then "" else " labels=\($labels)" end)
               + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
               + " container=\(.name) image=\(.image) runAsNonRoot=\($ok)"
-              + " is_compliant=\(if $ok then "true" else "false" end)"'
+              + " is_compliant=\(if $ok then "true" else "false" end)"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
         use_multiple_values: true
         tests:
           test_items:
@@ -123,7 +129,7 @@ groups:
         references: ["cis:5.2.6", "eks:4.2.5", "aks:4.2.5"]
         audit: |
           kubectl get pods --all-namespaces -o json | jq -r '
-            .items[]
+            [ .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
             | .metadata as $m
             | (.spec.nodeName // "") as $node
@@ -138,7 +144,9 @@ groups:
               + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
               + " container=\(.name) image=\(.image)"
               + " allowPrivilegeEscalation=\(.securityContext.allowPrivilegeEscalation // "unset")"
-              + " is_compliant=\(if $ok then "true" else "false" end)"'
+              + " is_compliant=\(if $ok then "true" else "false" end)"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
         use_multiple_values: true
         tests:
           test_items:
@@ -157,7 +165,7 @@ groups:
         references: ["cis:5.2.9"]
         audit: |
           kubectl get pods --all-namespaces -o json | jq -r '
-            .items[]
+            [ .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
             | .metadata as $m
             | (.spec.nodeName // "") as $node
@@ -173,7 +181,9 @@ groups:
               + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
               + " container=\(.name) image=\(.image)"
               + " capabilitiesDrop=\(if ($drop | length) == 0 then "none" else ($drop | join("+")) end)"
-              + " is_compliant=\(if $ok then "true" else "false" end)"'
+              + " is_compliant=\(if $ok then "true" else "false" end)"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
         use_multiple_values: true
         tests:
           test_items:
@@ -191,7 +201,7 @@ groups:
         severity: medium
         audit: |
           kubectl get pods --all-namespaces -o json | jq -r '
-            .items[]
+            [ .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
             | .metadata as $m
             | (.spec.nodeName // "") as $node
@@ -206,7 +216,9 @@ groups:
               + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
               + " container=\(.name) image=\(.image)"
               + " readOnlyRootFilesystem=\(.securityContext.readOnlyRootFilesystem // "unset")"
-              + " is_compliant=\(if $ok then "true" else "false" end)"'
+              + " is_compliant=\(if $ok then "true" else "false" end)"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
         use_multiple_values: true
         tests:
           test_items:
@@ -226,7 +238,7 @@ groups:
         references: ["cis:5.2.11"]
         audit: |
           kubectl get pods --all-namespaces -o json | jq -r '
-            .items[]
+            [ .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
             | .metadata as $m
             | (.spec.nodeName // "") as $node
@@ -239,7 +251,9 @@ groups:
               + (if $labels == ""   then "" else " labels=\($labels)" end)
               + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
               + (if ($hp | length) == 0 then "" else " hostPaths=\([ $hp[] | .hostPath.path ] | join("+"))" end)
-              + " is_compliant=\(if ($hp | length) > 0 then "false" else "true" end)"'
+              + " is_compliant=\(if ($hp | length) > 0 then "false" else "true" end)"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
         use_multiple_values: true
         tests:
           test_items:
@@ -257,7 +271,7 @@ groups:
         severity: medium
         audit: |
           kubectl get pods --all-namespaces -o json | jq -r '
-            .items[]
+            [ .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
             | .metadata as $m
             | (.spec.nodeName // "") as $node
@@ -272,7 +286,9 @@ groups:
               + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
               + " container=\(.name) image=\(.image)"
               + " limitsCpu=\(.resources.limits.cpu // "unset") limitsMemory=\(.resources.limits.memory // "unset")"
-              + " is_compliant=\(if $ok then "true" else "false" end)"'
+              + " is_compliant=\(if $ok then "true" else "false" end)"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
         use_multiple_values: true
         tests:
           test_items:
@@ -290,7 +306,7 @@ groups:
         severity: low
         audit: |
           kubectl get pods --all-namespaces -o json | jq -r '
-            .items[]
+            [ .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
             | .metadata as $m
             | (.spec.nodeName // "") as $node
@@ -305,7 +321,9 @@ groups:
               + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
               + " container=\(.name) image=\(.image)"
               + " requestsCpu=\(.resources.requests.cpu // "unset") requestsMemory=\(.resources.requests.memory // "unset")"
-              + " is_compliant=\(if $ok then "true" else "false" end)"'
+              + " is_compliant=\(if $ok then "true" else "false" end)"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
         use_multiple_values: true
         tests:
           test_items:
@@ -323,7 +341,7 @@ groups:
         severity: low
         audit: |
           kubectl get pods --all-namespaces -o json | jq -r '
-            .items[]
+            [ .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
             | .metadata as $m
             | (.spec.nodeName // "") as $node
@@ -338,7 +356,9 @@ groups:
               + (if $labels == ""   then "" else " labels=\($labels)" end)
               + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
               + " container=\(.name) image=\($img)"
-              + " is_compliant=\(if $ok then "true" else "false" end)"'
+              + " is_compliant=\(if $ok then "true" else "false" end)"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
         use_multiple_values: true
         tests:
           test_items:
@@ -356,7 +376,7 @@ groups:
         severity: low
         audit: |
           kubectl get pods --all-namespaces -o json | jq -r '
-            .items[]
+            [ .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
             | .metadata as $m
             | (.spec.nodeName // "") as $node
@@ -372,7 +392,9 @@ groups:
               + (if $labels == ""   then "" else " labels=\($labels)" end)
               + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
               + " container=\(.name) image=\($img) imagePullPolicy=\(.imagePullPolicy // "unset")"
-              + " is_compliant=\(if $ok then "true" else "false" end)"'
+              + " is_compliant=\(if $ok then "true" else "false" end)"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
         use_multiple_values: true
         tests:
           test_items:
@@ -434,7 +456,7 @@ groups:
         references: ["cis:5.1.6", "eks:4.1.6", "gke:4.1.5", "aks:4.1.6"]
         audit: |
           kubectl get pods --all-namespaces -o json | jq -r '
-            .items[]
+            [ .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
             | .metadata as $m
             | (.spec.nodeName // "") as $node
@@ -448,7 +470,9 @@ groups:
               + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
               + " serviceAccount=\(.spec.serviceAccountName // "default")"
               + " automountServiceAccountToken=\(.spec.automountServiceAccountToken // "unset")"
-              + " is_compliant=\(if $ok then "true" else "false" end)"'
+              + " is_compliant=\(if $ok then "true" else "false" end)"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
         use_multiple_values: true
         tests:
           test_items:
@@ -515,7 +539,7 @@ groups:
         audit: |
           nps=$(kubectl get networkpolicies --all-namespaces -o json)
           kubectl get namespaces -o json | jq -r --argjson nps "$nps" '
-            .items[]
+            [ .items[]
             | select(.metadata.name as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
             | .metadata as $m
             | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
@@ -527,7 +551,9 @@ groups:
               + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
               + (if $labels == "" then "" else " labels=\($labels)" end)
               + " defaultDenyPolicies=\($deny)"
-              + " is_compliant=\(if $deny > 0 then "true" else "false" end)"'
+              + " is_compliant=\(if $deny > 0 then "true" else "false" end)"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
         use_multiple_values: true
         tests:
           test_items:
@@ -574,7 +600,7 @@ groups:
         references: ["cis:5.2.1"]
         audit: |
           kubectl get namespaces -o json | jq -r '
-            .items[]
+            [ .items[]
             | select(.metadata.name as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
             | .metadata as $m
             | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
@@ -583,7 +609,9 @@ groups:
               + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
               + (if $labels == "" then "" else " labels=\($labels)" end)
               + " enforce=\(if $lvl == "" then "none" else $lvl end)"
-              + " is_compliant=\(if ($lvl == "baseline" or $lvl == "restricted") then "true" else "false" end)"'
+              + " is_compliant=\(if ($lvl == "baseline" or $lvl == "restricted") then "true" else "false" end)"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
         use_multiple_values: true
         tests:
           test_items:
@@ -673,7 +701,7 @@ groups:
         severity: low
         audit: |
           kubectl get pods --all-namespaces -o json | jq -r '
-            .items[]
+            [ .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
             | .metadata as $m
             | (.spec.nodeName // "") as $node
@@ -684,7 +712,9 @@ groups:
               + (if $node   == ""   then "" else " node=\($node)" end)
               + (if $labels == ""   then "" else " labels=\($labels)" end)
               + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
-              + " is_compliant=\(if $own == null then "false" else "true" end)"'
+              + " is_compliant=\(if $own == null then "false" else "true" end)"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
         use_multiple_values: true
         tests:
           test_items:
