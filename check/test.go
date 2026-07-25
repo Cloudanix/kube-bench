@@ -80,10 +80,91 @@ type compare struct {
 }
 
 type testOutput struct {
-	testResult     bool
-	flagFound      bool
-	actualResult   string
-	ExpectedResult string
+	testResult      bool
+	flagFound       bool
+	actualResult    string
+	ExpectedResult  string
+	failedResources []FailedResource
+}
+
+// kvTokenRe matches the space-separated key=value tokens a CBP audit row is built from.
+// Every value we emit (k8s names, UIDs, RFC3339 stamps, label pairs, image refs) is
+// whitespace-free by k8s validation, so \S+ is an exact terminator.
+var kvTokenRe = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)=(\S+)`)
+
+// parseFailedResource turns one audit row into a FailedResource. Reserved keys map to
+// struct fields; every other key lands in Attributes, which is the extension point — a
+// new CBP check adds attributes without touching this function. Reports false when the
+// row is not a Kubernetes object, which is what keeps file/process checks unaffected.
+// See docs-internal/misconfig-cbp/failed-resources.md §4.
+func parseFailedResource(row string) (FailedResource, bool) {
+	var fr FailedResource
+	// Cheap bail for file/process rows ("--anonymous-auth=false", "644"): with no kind=
+	// token nothing here is a k8s object, so don't allocate the attribute map.
+	if !strings.Contains(row, "kind=") {
+		return fr, false
+	}
+	for _, m := range kvTokenRe.FindAllStringSubmatch(row, -1) {
+		k, v := m[1], m[2]
+		switch k {
+		case "kind":
+			fr.Kind = v
+		case "ns":
+			fr.Namespace = v
+		case "name":
+			fr.Name = v
+		case "uid":
+			fr.UID = v
+		case "apiVersion":
+			fr.APIVersion = v
+		case "created":
+			fr.CreationTimestamp = v
+		case "node":
+			fr.Node = v
+		case "labels":
+			fr.Labels = parseLabels(v)
+		case "owner":
+			if p, ok := parseParent(v); ok {
+				fr.Owners = append(fr.Owners, p)
+			}
+		case "is_compliant":
+			// the verdict the compare op reads, not metadata
+		default:
+			if fr.Attributes == nil {
+				fr.Attributes = map[string]string{}
+			}
+			fr.Attributes[k] = v
+		}
+	}
+	return fr, fr.Kind != "" && fr.Name != ""
+}
+
+// parseLabels decodes k:v,k:v. ':' and ',' are invalid in k8s label keys and values, so
+// the encoding is unambiguous; '/' in a key prefix is preserved by cutting on the first ':'.
+func parseLabels(s string) map[string]string {
+	m := map[string]string{}
+	for _, kv := range strings.Split(s, ",") {
+		if k, v, ok := strings.Cut(kv, ":"); ok && k != "" {
+			m[k] = v
+		}
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	return m
+}
+
+// parseParent decodes Kind/ns/name[/uid]; ns is empty for cluster-scoped owners.
+func parseParent(s string) (ParentResource, bool) {
+	p := strings.SplitN(s, "/", 4)
+	if len(p) < 3 || p[0] == "" || p[2] == "" {
+		return ParentResource{}, false
+	}
+	pr := ParentResource{Kind: p[0], Namespace: p[1], Name: p[2]}
+	if len(p) == 4 {
+		pr.UID = p[3]
+	}
+	return pr, true
 }
 
 func failTestItem(s string) *testOutput {
@@ -204,15 +285,35 @@ func (t testItem) execute(s string) *testOutput {
 		output = []string{s}
 	}
 
+	// Multi-output checks visit every row so the full failing set is collected, but the
+	// result still comes from the FIRST failing row (all-pass still ends on the last row),
+	// so pass/fail semantics are unchanged. Single-output keeps the original early break.
+	var failedRes []FailedResource
+	seen := map[string]bool{}
+	failed := false
 	for _, op := range output {
-		result = t.evaluate(op)
-		// If the test failed for the current row, no need to keep testing for this output
-		if !result.testResult {
-			break
+		row := t.evaluate(op)
+		if !row.testResult {
+			if !failed {
+				result = row
+				failed = true
+			}
+			if fr, ok := parseFailedResource(op); ok {
+				if k := fr.key(); !seen[k] {
+					seen[k] = true
+					failedRes = append(failedRes, fr)
+				}
+			}
+			if !t.isMultipleOutput {
+				break
+			}
+		} else if !failed {
+			result = row
 		}
 	}
 
 	result.actualResult = s
+	result.failedResources = failedRes
 	return result
 }
 

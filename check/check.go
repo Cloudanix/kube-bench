@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 
 	"github.com/golang/glog"
@@ -65,31 +66,77 @@ const (
 // Check contains information about a recommendation in the
 // CIS Kubernetes document.
 type Check struct {
-	ID                string   `yaml:"id" json:"test_number"`
-	Text              string   `json:"test_desc"`
-	Audit             string   `json:"audit"`
-	AuditEnv          string   `yaml:"audit_env"`
-	AuditConfig       string   `yaml:"audit_config"`
-	Type              string   `json:"type"`
-	Tests             *tests   `json:"-"`
-	Set               bool     `json:"-"`
-	Remediation       string   `json:"remediation"`
-	TestInfo          []string `json:"test_info"`
-	State             `json:"status"`
-	ActualValue       string `json:"actual_value"`
-	Scored            bool   `json:"scored"`
-	IsMultiple        bool   `yaml:"use_multiple_values"`
-	ExpectedResult    string `json:"expected_result"`
-	Reason            string `json:"reason,omitempty"`
-	Severity          string `yaml:"severity" json:"severity,omitempty"`
+	ID             string   `yaml:"id" json:"test_number"`
+	Text           string   `json:"test_desc"`
+	Audit          string   `json:"audit"`
+	AuditEnv       string   `yaml:"audit_env"`
+	AuditConfig    string   `yaml:"audit_config"`
+	Type           string   `json:"type"`
+	Tests          *tests   `json:"-"`
+	Set            bool     `json:"-"`
+	Remediation    string   `json:"remediation"`
+	TestInfo       []string `json:"test_info"`
+	State          `json:"status"`
+	ActualValue    string `json:"actual_value"`
+	Scored         bool   `json:"scored"`
+	IsMultiple     bool   `yaml:"use_multiple_values"`
+	ExpectedResult string `json:"expected_result"`
+	Reason         string `json:"reason,omitempty"`
+	Severity       string `yaml:"severity" json:"severity,omitempty"`
 	// References lists equivalent checks in other benchmarks as "family:id"
 	// tokens (e.g. "eks:4.2.1"), used downstream to dedupe the same finding when
 	// CBP is co-run with a platform benchmark. See docs-internal/misconfig-cbp.
-	References         []string `yaml:"references" json:"references,omitempty"`
-	AuditOutput       string `json:"-"`
-	AuditEnvOutput    string `json:"-"`
-	AuditConfigOutput string `json:"-"`
-	DisableEnvTesting bool   `json:"-"`
+	References []string `yaml:"references" json:"references,omitempty"`
+	// FailedResources lists the Kubernetes objects that failed this check, parsed from
+	// the kind=<Kind> tokens the CBP audits emit. Empty for file/process checks.
+	// See docs-internal/misconfig-cbp/failed-resources.md.
+	FailedResources   []FailedResource `json:"failed_resources,omitempty"`
+	AuditOutput       string           `json:"-"`
+	AuditEnvOutput    string           `json:"-"`
+	AuditConfigOutput string           `json:"-"`
+	DisableEnvTesting bool             `json:"-"`
+}
+
+// FailedResource identifies one Kubernetes object that failed a check, with enough
+// metadata for the console to render it standalone — i.e. without waiting for
+// container-security-services' inventory-collector to report the same object. Field
+// names mirror that service's objects.Resource so the backend can merge the two on
+// (cluster_identifier, uid) with no mapping layer.
+type FailedResource struct {
+	Kind              string            `json:"kind"`
+	Namespace         string            `json:"namespace,omitempty"`
+	Name              string            `json:"name"`
+	UID               string            `json:"uid,omitempty"`
+	APIVersion        string            `json:"apiVersion,omitempty"`
+	CreationTimestamp string            `json:"creationTimestamp,omitempty"`
+	Node              string            `json:"node,omitempty"`
+	Labels            map[string]string `json:"labels,omitempty"`
+	Owners            []ParentResource  `json:"owners,omitempty"`
+	Attributes        map[string]string `json:"attributes,omitempty"`
+}
+
+// ParentResource is a controller ownerReference. Subset of inventory's ParentResource.
+type ParentResource struct {
+	Kind      string `json:"kind"`
+	Namespace string `json:"namespace,omitempty"`
+	Name      string `json:"name"`
+	UID       string `json:"uid,omitempty"`
+}
+
+// key identifies a FailedResource for dedup: identity plus its attribute set, so two
+// failing containers in the same pod stay two entries.
+func (f FailedResource) key() string {
+	var b strings.Builder
+	b.WriteString(f.Kind + "/" + f.Namespace + "/" + f.Name + "/" + f.UID)
+	ks := make([]string, 0, len(f.Attributes))
+	for k := range f.Attributes {
+		ks = append(ks, k)
+	}
+	sort.Strings(ks)
+	for _, k := range ks {
+		b.WriteString("|" + k + "=" + f.Attributes[k])
+	}
+	return b.String()
 }
 
 // Runner wraps the basic Run method.
@@ -173,6 +220,7 @@ func (c *Check) run() State {
 
 		c.ActualValue = finalOutput.actualResult
 		c.ExpectedResult = finalOutput.ExpectedResult
+		c.FailedResources = finalOutput.failedResources
 	}
 
 	if err != nil {
@@ -288,6 +336,19 @@ func (c *Check) execute() (finalOutput *testOutput, err error) {
 
 	finalOutput.testResult = result
 	finalOutput.actualResult = res[0].actualResult
+
+	// Union the per-test_item failed resources. The seen map is load-bearing even for a
+	// single test_item: (*Check).execute may re-run an item against the auditConfig /
+	// auditEnv output, and container-scoped checks emit one row per container.
+	seen := map[string]bool{}
+	for i := range res {
+		for _, fr := range res[i].failedResources {
+			if k := fr.key(); !seen[k] {
+				seen[k] = true
+				finalOutput.failedResources = append(finalOutput.failedResources, fr)
+			}
+		}
+	}
 
 	glog.V(3).Infof("Returning from execute on tests: finalOutput %#v", finalOutput)
 	return finalOutput, nil
