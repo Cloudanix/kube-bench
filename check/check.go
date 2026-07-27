@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -87,14 +88,18 @@ type Check struct {
 	// tokens (e.g. "eks:4.2.1"), used downstream to dedupe the same finding when
 	// CBP is co-run with a platform benchmark. See docs-internal/misconfig-cbp.
 	References []string `yaml:"references" json:"references,omitempty"`
-	// FailedResources lists the Kubernetes objects that failed this check, parsed from
-	// the kind=<Kind> tokens the CBP audits emit. Empty for file/process checks.
-	// See docs-internal/misconfig-cbp/failed-resources.md.
+	// FailedResources lists what failed this check: the Kubernetes objects parsed from the
+	// kind=<Kind> tokens a kubectl audit emits, or — for the host-scoped targets, whose
+	// audits name no object — the node itself. See addNodeResource and
+	// docs-internal/misconfig-cbp/failed-resources.md.
 	FailedResources   []FailedResource `json:"failed_resources,omitempty"`
 	AuditOutput       string           `json:"-"`
 	AuditEnvOutput    string           `json:"-"`
 	AuditConfigOutput string           `json:"-"`
 	DisableEnvTesting bool             `json:"-"`
+	// usedAuditConfig records that the verdict came from AuditConfig rather than Audit, so
+	// auditedFile names the config file the check actually read.
+	usedAuditConfig bool
 }
 
 // FailedResource identifies one Kubernetes object that failed a check, with enough
@@ -256,6 +261,120 @@ func (c *Check) run() State {
 	return c.State
 }
 
+// hostScopedTargets are the benchmark targets whose audits inspect the local machine
+// (stat, ps, cat) rather than the API server. Their failing resource is the node itself.
+var hostScopedTargets = map[NodeType]bool{MASTER: true, NODE: true, ETCD: true, CONTROLPLANE: true}
+
+// addNodeResource gives host-scoped checks the same failed_resources shape the CBP kubectl
+// checks get. Their audit prints bare values ("permissions=600", "root:root", a kubelet ps
+// line) with no kind= token, so parseFailedResource skips them and the console is left with
+// a finding it cannot attribute to anything. Here the node IS the resource, and the values
+// the check actually tested become its attributes.
+//
+// No-op once a check has parsed real objects out of its output, so CBP — and any future
+// audit that emits kind= rows — is untouched.
+func (c *Check) addNodeResource(target NodeType, nodeName string) {
+	if len(c.FailedResources) > 0 || nodeName == "" || !hostScopedTargets[target] {
+		return
+	}
+	if c.State != FAIL && c.State != WARN {
+		return
+	}
+	// Manual and skipped checks never ran an audit; naming a node for them is noise.
+	if strings.TrimSpace(c.ActualValue) == "" {
+		return
+	}
+
+	fr := FailedResource{Kind: "Node", Name: nodeName, Attributes: c.testedValues()}
+	if f := c.auditedFile(); f != "" {
+		if fr.Attributes == nil {
+			fr.Attributes = map[string]string{}
+		}
+		fr.Attributes["file"] = f
+	}
+	c.FailedResources = []FailedResource{fr}
+}
+
+// auditPathRe matches the whitespace-delimited absolute paths in an audit command. The
+// leading boundary is load-bearing: without it `apiVersion=rbac.authorization.k8s.io/v1`
+// and sed programs like `s/^/provider=/` yield bogus "paths".
+var auditPathRe = regexp.MustCompile(`(?:^|\s)(/[^\s'";|]+)`)
+
+// nonFilePrefixes are absolute paths that are not a file this check inspects:
+//   - the audit's own tooling (/bin/sh, /bin/ps, /bin/cat)
+//   - /dev/null and friends, which are redirect sinks — without this, `stat … 2>/dev/null`
+//     reports /dev/null instead of the file it just stat'd
+//   - apiserver URLs, which is what `kubectl get --raw /api/v1/nodes/…/configz` passes
+var nonFilePrefixes = []string{
+	"/bin/", "/sbin/", "/usr/bin/", "/usr/sbin/", "/usr/local/bin/",
+	"/dev/",
+	"/api/", "/apis/",
+}
+
+// auditedFile names the file this check inspected, so a permissions or ownership finding
+// says which file is wrong rather than only what the mode was. Variable substitution runs
+// over the whole controls file before any check does (cmd/common.go), so $kubeletconf and
+// friends are already real paths here and the subject is the last non-tooling path in the
+// command. Empty when the audit inspects no file (`ps -fC kubelet`) — correctly so.
+func (c *Check) auditedFile() string {
+	cmd := c.Audit
+	if c.usedAuditConfig {
+		cmd = c.AuditConfig
+	}
+
+	var subject string
+	for _, m := range auditPathRe.FindAllStringSubmatch(cmd, -1) {
+		p := m[1]
+		skip := false
+		for _, d := range nonFilePrefixes {
+			if strings.HasPrefix(p, d) {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			subject = p
+		}
+	}
+	return subject
+}
+
+// hostTokenRe matches the key=value tokens host audits print, including the CLI forms
+// ("--anonymous-auth=false") that kvTokenRe deliberately excludes because a k8s object row
+// never contains them.
+var hostTokenRe = regexp.MustCompile(`(?:^|\s)-{0,2}([A-Za-z_][A-Za-z0-9_.-]*)=(\S+)`)
+
+// testedValues pulls out only the tokens this check's test_items name. A `ps -fC kubelet`
+// line carries the node's entire flag set; recording all of it would bloat every result
+// with data the check never looked at, so the observed value of each tested flag is what
+// lands in Attributes. Returns nothing for path/env test_items — their audit output is a
+// config file, not key=value rows.
+func (c *Check) testedValues() map[string]string {
+	if c.Tests == nil {
+		return nil
+	}
+	wanted := map[string]bool{}
+	for _, t := range c.Tests.TestItems {
+		if f := strings.TrimLeft(t.Flag, "-"); f != "" {
+			wanted[f] = true
+		}
+	}
+	if len(wanted) == 0 {
+		return nil
+	}
+
+	out := map[string]string{}
+	for _, m := range hostTokenRe.FindAllStringSubmatch(c.ActualValue, -1) {
+		if wanted[m[1]] {
+			out[m[1]] = m[2]
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // auditAccessErrorPrefixes are what kubectl writes when it could not evaluate the audit at
 // all — as opposed to evaluating it to a failing result. Matched on whole lines so an audit
 // that legitimately prints one of these as data (none do today) needs it mid-line.
@@ -341,6 +460,9 @@ func (c *Check) execute() (finalOutput *testOutput, err error) {
 			result = *(t.execute(c.AuditEnvOutput))
 		}
 		glog.V(2).Infof("Used %s", t.auditUsed)
+		if t.auditUsed == AuditConfig {
+			c.usedAuditConfig = true
+		}
 		res[i] = result
 		expectedResultArr[i] = res[i].ExpectedResult
 	}

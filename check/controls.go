@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -100,6 +101,7 @@ func (controls *Controls) RunChecks(runner Runner, filter Predicate, skipIDMap m
 	var g []*Group
 	m := make(map[string]*Group)
 	controls.Summary.Pass, controls.Summary.Fail, controls.Summary.Warn, controls.Info = 0, 0, 0, 0
+	nodeName := hostIdentity()
 
 	for _, group := range controls.Groups {
 		for _, check := range group.Checks {
@@ -116,6 +118,7 @@ func (controls *Controls) RunChecks(runner Runner, filter Predicate, skipIDMap m
 			}
 
 			state := runner.Run(check)
+			check.addNodeResource(controls.Type, nodeName)
 
 			check.TestInfo = append(check.TestInfo, check.Remediation)
 
@@ -297,6 +300,27 @@ func getConfig(name string) (string, error) {
 		return "", fmt.Errorf("%s not set", name)
 	}
 	return r, nil
+}
+
+// hostIdentity names the machine being audited: the downward-API NODE_NAME when the pod
+// sets it, else the hostname — which is the node's own under the hostPID/hostNetwork the
+// node-target jobs already run with. Empty only when neither is available, in which case
+// there is nothing to identify a host-scoped resource by.
+func hostIdentity() string {
+	if n, err := getConfig("NODE_NAME"); err == nil {
+		return n
+	}
+	// viper only sees the prefixed form; accept the bare downward-API name too, since
+	// that is what every k8s manifest reaches for.
+	if n := os.Getenv("NODE_NAME"); n != "" {
+		return n
+	}
+	h, err := os.Hostname()
+	if err != nil {
+		glog.V(2).Infof("could not determine host identity: %v", err)
+		return ""
+	}
+	return h
 }
 
 func summarize(controls *Controls, state State) {
