@@ -131,8 +131,12 @@ groups:
           # Two API calls instead of one per pod; the compliance expression below is the
           # same if/elif the shell loop had, including the fall-through to false when the
           # ServiceAccount leaves automountServiceAccountToken unset.
-          sas=$(kubectl get serviceaccounts --all-namespaces -o json)
-          kubectl get pods --all-namespaces -o json | jq -r --argjson sas "$sas" '
+          # Both docs stream in on stdin and are slurped: --argjson would put a whole
+          # cluster of JSON on argv and trip ARG_MAX (jq: Argument list too long).
+          { kubectl get serviceaccounts --all-namespaces -o json
+            kubectl get pods --all-namespaces -o json
+          } | jq -rs '
+            .[0] as $sas | .[1] |
             [ .items[]
               | .metadata as $m
               | (.spec.serviceAccountName // .spec.serviceAccount // "default") as $sa

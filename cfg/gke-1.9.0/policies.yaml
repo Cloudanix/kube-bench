@@ -103,8 +103,12 @@ groups:
       - id: 4.1.4
         text: "Ensure that default service accounts are not actively used (Automated)"
         audit: |
-          pods=$(kubectl get pods --all-namespaces -o json)
-          kubectl get serviceaccounts --all-namespaces -o json | jq -r --argjson pods "$pods" '
+          # Both docs stream in on stdin and are slurped: --argjson would put a whole
+          # cluster of JSON on argv and trip ARG_MAX (jq: Argument list too long).
+          { kubectl get pods --all-namespaces -o json
+            kubectl get serviceaccounts --all-namespaces -o json
+          } | jq -rs '
+            .[0] as $pods | .[1] |
             [ ( .items[]
                 | select(.metadata.name == "default" and (.automountServiceAccountToken != false))
                 | .metadata as $m

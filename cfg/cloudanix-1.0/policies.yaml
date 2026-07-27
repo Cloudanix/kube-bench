@@ -521,8 +521,12 @@ groups:
           # "Broad" is the set of built-in subjects that stand in for everyone:
           # system:authenticated, system:unauthenticated, system:anonymous and
           # system:serviceaccounts. A binding to a named user or a single SA is not flagged.
-          roles=$(kubectl get roles,clusterroles --all-namespaces -o json)
-          kubectl get rolebindings,clusterrolebindings --all-namespaces -o json | jq -r --argjson roles "$roles" '
+          # Both docs stream in on stdin and are slurped: --argjson would put a whole
+          # cluster of JSON on argv and trip ARG_MAX (jq: Argument list too long).
+          { kubectl get roles,clusterroles --all-namespaces -o json
+            kubectl get rolebindings,clusterrolebindings --all-namespaces -o json
+          } | jq -rs '
+            .[0] as $roles | .[1] |
             def broad: ["system:authenticated","system:unauthenticated","system:anonymous","system:serviceaccounts"];
             [ $roles.items[]
               | select(any(.rules[]?;
@@ -594,8 +598,12 @@ groups:
         severity: high
         references: ["cis:5.3.2", "eks:4.3.2", "gke:4.3.2", "aks:4.4.2"]
         audit: |
-          nps=$(kubectl get networkpolicies --all-namespaces -o json)
-          kubectl get namespaces -o json | jq -r --argjson nps "$nps" '
+          # Both docs stream in on stdin and are slurped: --argjson would put a whole
+          # cluster of JSON on argv and trip ARG_MAX (jq: Argument list too long).
+          { kubectl get networkpolicies --all-namespaces -o json
+            kubectl get namespaces -o json
+          } | jq -rs '
+            .[0] as $nps | .[1] |
             [ .items[]
             | select(.metadata.name as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
             | .metadata as $m
@@ -629,8 +637,12 @@ groups:
         severity: medium
         references: ["cis:5.6.4", "eks:4.5.2", "aks:4.5.2"]
         audit: |
-          pods=$(kubectl get pods -n default -o json)
-          kubectl get namespace default -o json | jq -r --argjson pods "$pods" '
+          # Both docs stream in on stdin and are slurped: --argjson would put a whole
+          # cluster of JSON on argv and trip ARG_MAX (jq: Argument list too long).
+          { kubectl get pods -n default -o json
+            kubectl get namespace default -o json
+          } | jq -rs '
+            .[0] as $pods | .[1] |
             .metadata as $m
             | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
             | (($pods.items // []) | length) as $count
@@ -686,8 +698,12 @@ groups:
         text: "Tenant namespaces have a ResourceQuota (Automated)"
         severity: low
         audit: |
-          quotas=$(kubectl get resourcequotas --all-namespaces -o json)
-          kubectl get namespaces -o json | jq -r --argjson quotas "$quotas" '
+          # Both docs stream in on stdin and are slurped: --argjson would put a whole
+          # cluster of JSON on argv and trip ARG_MAX (jq: Argument list too long).
+          { kubectl get resourcequotas --all-namespaces -o json
+            kubectl get namespaces -o json
+          } | jq -rs '
+            .[0] as $quotas | .[1] |
             [ .items[]
             | select(.metadata.name as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
             | .metadata as $m
@@ -777,8 +793,12 @@ groups:
           # A PDB matches by label selector, so the check is "does some PDB in this namespace
           # select this Deployment's pod labels", not a name lookup. Only matchLabels is
           # evaluated; a PDB using matchExpressions is not counted as covering.
-          pdbs=$(kubectl get poddisruptionbudgets --all-namespaces -o json)
-          kubectl get deployments --all-namespaces -o json | jq -r --argjson pdbs "$pdbs" '
+          # Both docs stream in on stdin and are slurped: --argjson would put a whole
+          # cluster of JSON on argv and trip ARG_MAX (jq: Argument list too long).
+          { kubectl get poddisruptionbudgets --all-namespaces -o json
+            kubectl get deployments --all-namespaces -o json
+          } | jq -rs '
+            .[0] as $pdbs | .[1] |
             [ .items[]
             | select((.spec.replicas // 1) > 1)
             | .metadata as $m

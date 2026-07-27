@@ -131,8 +131,12 @@ groups:
       - id: 4.1.5
         text: "Ensure that default service accounts are not actively used. (Automated)"
         audit: |
-          pods=$(kubectl get pods --all-namespaces -o json)
-          kubectl get serviceaccounts --all-namespaces -o json | jq -r --argjson pods "$pods" '
+          # Both docs stream in on stdin and are slurped: --argjson would put a whole
+          # cluster of JSON on argv and trip ARG_MAX (jq: Argument list too long).
+          { kubectl get pods --all-namespaces -o json
+            kubectl get serviceaccounts --all-namespaces -o json
+          } | jq -rs '
+            .[0] as $pods | .[1] |
             [ ( .items[]
                 | select(.metadata.name == "default" and (.automountServiceAccountToken != false))
                 | .metadata as $m
@@ -437,8 +441,12 @@ groups:
       - id: 4.3.2
         text: "Ensure that all Namespaces have Network Policies defined (Automated)"
         audit: |
-          nps=$(kubectl get networkpolicies --all-namespaces -o json)
-          kubectl get namespaces -o json | jq -r --argjson nps "$nps" '
+          # Both docs stream in on stdin and are slurped: --argjson would put a whole
+          # cluster of JSON on argv and trip ARG_MAX (jq: Argument list too long).
+          { kubectl get networkpolicies --all-namespaces -o json
+            kubectl get namespaces -o json
+          } | jq -rs '
+            .[0] as $nps | .[1] |
             [ .items[]
               | .metadata as $m
               | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
@@ -514,7 +522,11 @@ groups:
       - id: 4.5.2
         text: "The default namespace should not be used (Automated)"
         audit: |
-          kubectl get $(kubectl api-resources --verbs=list --namespaced=true -o name | paste -sd, -) --ignore-not-found -n default -o json | jq -r '
+          # `get all` rather than every namespaced api-resource: enumerating all of them
+          # needs list on kinds a scanner has no business reading (Secrets included), so the
+          # audit died on the first ungranted kind. Workloads are what the control is about.
+          # Matches aks-1.8 4.5.2 and gke-1.9.0 4.6.4.
+          kubectl get all -n default -o json | jq -r '
             [ .items[]
               | .kind as $kind | .apiVersion as $api | .metadata as $m
               | select($kind != "Service" or $m.name != "kubernetes")
