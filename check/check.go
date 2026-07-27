@@ -207,6 +207,17 @@ func (c *Check) run() State {
 		finalOutput, err = c.execute()
 	}
 
+	// An audit that never reached the API server (RBAC denial, no kubeconfig) emits no
+	// rows, which the test_items read as a failing check — indistinguishable from a real
+	// misconfiguration. Report it as WARN carrying the server's message instead.
+	if msg := auditAccessError(c.AuditOutput); msg != "" {
+		c.Reason = msg
+		c.State = WARN
+		c.ActualValue = c.AuditOutput
+		glog.V(3).Info(c.Reason)
+		return c.State
+	}
+
 	if finalOutput != nil {
 		if finalOutput.testResult {
 			c.State = PASS
@@ -243,6 +254,30 @@ func (c *Check) run() State {
 		glog.V(2).Info(c.Reason)
 	}
 	return c.State
+}
+
+// auditAccessErrorPrefixes are what kubectl writes when it could not evaluate the audit at
+// all — as opposed to evaluating it to a failing result. Matched on whole lines so an audit
+// that legitimately prints one of these as data (none do today) needs it mid-line.
+var auditAccessErrorPrefixes = []string{
+	"Error from server",
+	"error: You must be logged in to the server",
+	"Unable to connect to the server",
+	"The connection to the server",
+}
+
+// auditAccessError returns the first line of audit output showing the API server was never
+// reached. Empty string when the output is a real audit result.
+func auditAccessError(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		for _, p := range auditAccessErrorPrefixes {
+			if strings.HasPrefix(line, p) {
+				return line
+			}
+		}
+	}
+	return ""
 }
 
 func (c *Check) runAuditCommands() (lastCommand string, err error) {
