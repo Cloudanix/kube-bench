@@ -102,13 +102,37 @@ type Check struct {
 	usedAuditConfig bool
 }
 
-// FailedResource identifies one Kubernetes object that failed a check, with enough
-// metadata for the console to render it standalone — i.e. without waiting for
-// container-security-services' inventory-collector to report the same object. Field
-// names mirror that service's objects.Resource so the backend can merge the two on
-// (cluster_identifier, uid) with no mapping layer.
+// ResourceScope says what kind of thing a FailedResource is, so downstream can resolve it
+// against the right inventory instead of assuming everything is a Kubernetes object.
+type ResourceScope string
+
+const (
+	// ScopeWorkload is an object in the cluster's API — Pod, Role, Namespace, Ingress.
+	// Resolvable against the k8s inventory on (cluster_identifier, uid).
+	ScopeWorkload ResourceScope = "workload"
+	// ScopeNode is the machine a host-scoped check ran on. The cloud inventory knows it as
+	// an EC2 / GCE / VMSS instance, not as a Kubernetes object, so it is linked by name.
+	ScopeNode ResourceScope = "node"
+	// ScopeCluster is the cluster as a whole, for findings that belong to no object in it.
+	// Which cluster is already on the POST (cdx-cluster-identifier), so a row only has to
+	// declare the scope. Audits opt in with a `scope=cluster` token.
+	ScopeCluster ResourceScope = "cluster"
+)
+
+// validScopes gates what an audit row may declare, so a typo cannot invent a scope the
+// backend has no branch for.
+var validScopes = map[ResourceScope]bool{ScopeWorkload: true, ScopeNode: true, ScopeCluster: true}
+
+// FailedResource identifies one thing that failed a check, with enough metadata for the
+// console to render it standalone — i.e. without waiting for container-security-services'
+// inventory-collector to report the same object. Field names mirror that service's
+// objects.Resource so the backend can merge the two on (cluster_identifier, uid) with no
+// mapping layer.
 type FailedResource struct {
-	Kind              string            `json:"kind"`
+	Kind string `json:"kind"`
+	// Scope distinguishes a Kubernetes object from the node or the cluster. Always set, so
+	// downstream can branch on it without inferring from Kind.
+	Scope             ResourceScope     `json:"scope"`
 	Namespace         string            `json:"namespace,omitempty"`
 	Name              string            `json:"name"`
 	UID               string            `json:"uid,omitempty"`
@@ -132,7 +156,7 @@ type ParentResource struct {
 // failing containers in the same pod stay two entries.
 func (f FailedResource) key() string {
 	var b strings.Builder
-	b.WriteString(f.Kind + "/" + f.Namespace + "/" + f.Name + "/" + f.UID)
+	b.WriteString(string(f.Scope) + "/" + f.Kind + "/" + f.Namespace + "/" + f.Name + "/" + f.UID)
 	ks := make([]string, 0, len(f.Attributes))
 	for k := range f.Attributes {
 		ks = append(ks, k)
@@ -290,7 +314,7 @@ func (c *Check) addNodeResource(target NodeType, nodeName string) {
 		return
 	}
 
-	fr := FailedResource{Kind: "Node", Name: nodeName, Attributes: c.testedValues()}
+	fr := FailedResource{Kind: "Node", Scope: ScopeNode, Name: nodeName, Attributes: c.testedValues()}
 	if audited := c.auditedFile(); audited != "" {
 		if fr.Attributes == nil {
 			fr.Attributes = map[string]string{}

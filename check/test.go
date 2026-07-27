@@ -98,11 +98,13 @@ var kvTokenRe = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)=(\S+)`)
 // row is not a Kubernetes object, which is what keeps file/process checks unaffected.
 // See docs-internal/misconfig-cbp/failed-resources.md §4.
 func parseFailedResource(row string) (FailedResource, bool) {
-	var fr FailedResource
+	// A kind= row is a Kubernetes object unless it says otherwise, which is what the
+	// overwhelming majority of audits emit.
+	fr := FailedResource{Scope: ScopeWorkload}
 	// Cheap bail for file/process rows ("--anonymous-auth=false", "644"): with no kind=
 	// token nothing here is a k8s object, so don't allocate the attribute map.
 	if !strings.Contains(row, "kind=") {
-		return fr, false
+		return FailedResource{}, false
 	}
 	for _, m := range kvTokenRe.FindAllStringSubmatch(row, -1) {
 		k, v := m[1], m[2]
@@ -127,6 +129,13 @@ func parseFailedResource(row string) (FailedResource, bool) {
 			if p, ok := parseParent(v); ok {
 				fr.Owners = append(fr.Owners, p)
 			}
+		case "scope":
+			// An audit declares a non-workload scope for findings that belong to the node
+			// or the cluster rather than to an object in it. Unknown values are ignored so
+			// a typo degrades to workload instead of reaching the backend as a new scope.
+			if s := ResourceScope(v); validScopes[s] {
+				fr.Scope = s
+			}
 		case "is_compliant":
 			// the verdict the compare op reads, not metadata
 		default:
@@ -135,6 +144,11 @@ func parseFailedResource(row string) (FailedResource, bool) {
 			}
 			fr.Attributes[k] = v
 		}
+	}
+	// A workload or node row is useless without a name. A cluster row is not: which cluster
+	// this is already travels on the POST, so the row only has to declare its scope.
+	if fr.Scope == ScopeCluster {
+		return fr, fr.Kind != ""
 	}
 	return fr, fr.Kind != "" && fr.Name != ""
 }

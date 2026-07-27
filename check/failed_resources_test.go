@@ -93,16 +93,37 @@ func TestParseFailedResource(t *testing.T) {
 				Attributes: map[string]string{"container": "api", "image": "api@sha256:deadbeef"},
 			},
 		},
+		{
+			name: "an audit may declare a cluster-scoped finding, which needs no name",
+			row:  "kind=Cluster scope=cluster rbacMode=legacy is_compliant=false",
+			ok:   true,
+			want: FailedResource{
+				Kind: "Cluster", Scope: ScopeCluster,
+				Attributes: map[string]string{"rbacMode": "legacy"},
+			},
+		},
+		{
+			name: "an unknown scope degrades to workload rather than reaching the backend",
+			row:  "kind=Pod ns=x name=y scope=galaxy is_compliant=false",
+			ok:   true,
+			want: FailedResource{Kind: "Pod", Namespace: "x", Name: "y"},
+		},
 		// Rows that are not Kubernetes objects must produce nothing at all — this is what
 		// keeps CIS/EKS file and process checks byte-identical.
 		{name: "pass sentinel", row: "is_compliant=true"},
 		{name: "process flag", row: "--anonymous-auth=false"},
 		{name: "bare file mode", row: "644"},
 		{name: "kind without name", row: "kind=Pod ns=default is_compliant=false"},
+		// scope=cluster is what waives the name requirement; nothing else does.
+		{name: "kind without name, node-scoped", row: "kind=Node scope=node is_compliant=false"},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			// Every k8s object row is workload-scoped unless the case says otherwise.
+			if c.ok && c.want.Scope == "" {
+				c.want.Scope = ScopeWorkload
+			}
 			got, ok := parseFailedResource(c.row)
 			if ok != c.ok {
 				t.Fatalf("ok = %v, want %v (got %+v)", ok, c.ok, got)

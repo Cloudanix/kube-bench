@@ -185,6 +185,11 @@ func TestAddNodeResource(t *testing.T) {
 			if fr.Kind != "Node" || fr.Name != "ip-10-0-1-23.ec2.internal" {
 				t.Errorf("identity = %s/%s, want Node/ip-10-0-1-23.ec2.internal", fr.Kind, fr.Name)
 			}
+			// Downstream links a node against the cloud compute inventory, not the k8s
+			// one, so the scope has to say so rather than leaving it to infer from Kind.
+			if fr.Scope != ScopeNode {
+				t.Errorf("scope = %q, want %q", fr.Scope, ScopeNode)
+			}
 			if len(fr.Attributes) != len(tc.attrs) {
 				t.Fatalf("attributes = %v, want %v", fr.Attributes, tc.attrs)
 			}
