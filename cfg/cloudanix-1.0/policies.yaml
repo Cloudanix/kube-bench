@@ -143,7 +143,7 @@ groups:
               + (if $labels == ""   then "" else " labels=\($labels)" end)
               + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
               + " container=\(.name) image=\(.image)"
-              + " allowPrivilegeEscalation=\(.securityContext.allowPrivilegeEscalation // "unset")"
+              + " allowPrivilegeEscalation=\(if .securityContext.allowPrivilegeEscalation == null then "unset" else .securityContext.allowPrivilegeEscalation end)"
               + " is_compliant=\(if $ok then "true" else "false" end)"
             ] as $rows
             | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
@@ -215,7 +215,7 @@ groups:
               + (if $labels == ""   then "" else " labels=\($labels)" end)
               + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
               + " container=\(.name) image=\(.image)"
-              + " readOnlyRootFilesystem=\(.securityContext.readOnlyRootFilesystem // "unset")"
+              + " readOnlyRootFilesystem=\(if .securityContext.readOnlyRootFilesystem == null then "unset" else .securityContext.readOnlyRootFilesystem end)"
               + " is_compliant=\(if $ok then "true" else "false" end)"
             ] as $rows
             | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
@@ -469,7 +469,7 @@ groups:
               + (if $labels == ""   then "" else " labels=\($labels)" end)
               + (if $own    == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
               + " serviceAccount=\(.spec.serviceAccountName // "default")"
-              + " automountServiceAccountToken=\(.spec.automountServiceAccountToken // "unset")"
+              + " automountServiceAccountToken=\(if .spec.automountServiceAccountToken == null then "unset" else .spec.automountServiceAccountToken end)"
               + " is_compliant=\(if $ok then "true" else "false" end)"
             ] as $rows
             | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
