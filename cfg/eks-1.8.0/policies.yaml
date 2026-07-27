@@ -4,6 +4,16 @@ version: "eks-1.8.0"
 id: 4
 text: "Policies"
 type: "policies"
+# Audit rows are space-separated key=value tokens, the same contract cloudanix-1.0 uses:
+# `kind=` marks the row as a Kubernetes object and drives check.FailedResource, and any key
+# that is not reserved lands in `attributes`. Optional tokens are omitted rather than
+# emitted empty — jq renders a missing field as the literal string "null". An audit that
+# matches nothing emits the `is_compliant=true` sentinel and passes. This is what lets a
+# standalone eks-1.8.0 run name the offending objects instead of only reporting that some
+# exist. See docs-internal/misconfig-cbp/failed-resources.md.
+#
+# Each audit keeps the pass/fail semantics of the sentinel-string version it replaced — the
+# same resource scope, the same violation condition — so only the reporting changed.
 groups:
   - id: 4.1
     text: "RBAC and Service Accounts"
@@ -12,19 +22,24 @@ groups:
         text: "Ensure that the cluster-admin role is only used where required (Automated)"
         audit: |
           kubectl get clusterrolebindings -o json | jq -r '
-            .items[]
-            | select(.roleRef.name == "cluster-admin")
-            | .subjects[]?
-            | select(.kind != "Group" or (.name != "system:masters" and .name != "system:nodes"))
-            | "FOUND_CLUSTER_ADMIN_BINDING"
-          ' || echo "NO_CLUSTER_ADMIN_BINDINGS"
+            [ .items[]
+              | select(.roleRef.name == "cluster-admin")
+              | .metadata as $m
+              | ((.subjects // [])[] | select(.kind != "Group" or (.name != "system:masters" and .name != "system:nodes")))
+              | "kind=ClusterRoleBinding name=\($m.name) uid=\($m.uid) apiVersion=rbac.authorization.k8s.io/v1"
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + " subjectKind=\(.kind) subject=\(.name)"
+                + (if (.namespace // "") == "" then "" else " subjectNamespace=\(.namespace)" end)
+                + " roleRef=cluster-admin is_compliant=false"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
+        use_multiple_values: true
         tests:
           test_items:
-            - flag: "NO_CLUSTER_ADMIN_BINDINGS"
-              set: true
+            - flag: "is_compliant"
               compare:
                 op: eq
-                value: "NO_CLUSTER_ADMIN_BINDINGS"
+                value: true
         remediation: |
           Identify all clusterrolebindings to the cluster-admin role. Check if they are used and if
           they need this role or if they could use a role with fewer privileges.
@@ -36,20 +51,26 @@ groups:
       - id: 4.1.2
         text: "Minimize access to secrets (Automated)"
         audit: |
-          count=$(kubectl get roles --all-namespaces -o json | jq '
-            .items[]
-            | select(.rules[]?
-              | (.resources[]? == "secrets")
-              and ((.verbs[]? == "get") or (.verbs[]? == "list") or (.verbs[]? == "watch"))
-            )' | wc -l)
-
-          if [ "$count" -gt 0 ]; then
-            echo "SECRETS_ACCESS_FOUND"
-          fi
+          kubectl get roles --all-namespaces -o json | jq -r '
+            [ .items[]
+              | .metadata as $m
+              | [ .rules[]?
+                  | select((any(.resources[]?; . == "secrets"))
+                    and (any(.verbs[]?; . == "get" or . == "list" or . == "watch")))
+                  | (.verbs // []) | join(",") ] as $verbs
+              | select(($verbs | length) > 0)
+              | "kind=Role ns=\($m.namespace) name=\($m.name) uid=\($m.uid) apiVersion=rbac.authorization.k8s.io/v1"
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + " resource=secrets verbs=\($verbs | join("|")) is_compliant=false"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
+        use_multiple_values: true
         tests:
           test_items:
-            - flag: "SECRETS_ACCESS_FOUND"
-              set: false
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
         remediation: |
           Where possible, remove get, list and watch access to secret objects in the cluster.
         scored: true
@@ -57,25 +78,26 @@ groups:
       - id: 4.1.3
         text: "Minimize wildcard use in Roles and ClusterRoles (Automated)"
         audit: |
-          wildcards=$(kubectl get roles --all-namespaces -o json | jq '
-            .items[] | select(
-              .rules[]? | (.verbs[]? == "*" or .resources[]? == "*" or .apiGroups[]? == "*")
-            )' | wc -l)
-
-          wildcards_clusterroles=$(kubectl get clusterroles -o json | jq '
-            .items[] | select(
-              .rules[]? | (.verbs[]? == "*" or .resources[]? == "*" or .apiGroups[]? == "*")
-            )' | wc -l)
-
-          total=$((wildcards + wildcards_clusterroles))
-
-          if [ "$total" -gt 0 ]; then
-            echo "wildcards_present"
-          fi
+          kubectl get roles,clusterroles --all-namespaces -o json | jq -r '
+            [ .items[]
+              | .kind as $kind | .metadata as $m
+              | [ .rules[]?
+                  | select((any(.verbs[]?; . == "*")) or (any(.resources[]?; . == "*")) or (any(.apiGroups[]?; . == "*"))) ] as $wild
+              | select(($wild | length) > 0)
+              | "kind=\($kind)"
+                + (if ($m.namespace // "") == "" then "" else " ns=\($m.namespace)" end)
+                + " name=\($m.name) uid=\($m.uid) apiVersion=rbac.authorization.k8s.io/v1"
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + " wildcardRules=\($wild | length) is_compliant=false"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
+        use_multiple_values: true
         tests:
           test_items:
-            - flag: wildcards_present
-              set: false
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
         remediation: |
           Where possible replace any use of wildcards in clusterroles and roles with specific
           objects or actions.
@@ -84,21 +106,24 @@ groups:
       - id: 4.1.4
         text: "Minimize access to create pods (Automated)"
         audit: |
-          access=$(kubectl get roles,clusterroles -A -o json | jq '
-            [.items[] |
-              select(
-                .rules[]? |
-                (.resources[]? == "pods" and .verbs[]? == "create")
-              )
-            ] | length')
-
-          if [ "$access" -gt 0 ]; then
-            echo "pods_create_access"
-          fi
+          kubectl get roles,clusterroles --all-namespaces -o json | jq -r '
+            [ .items[]
+              | .kind as $kind | .metadata as $m
+              | select(any(.rules[]?; (any(.resources[]?; . == "pods")) and (any(.verbs[]?; . == "create"))))
+              | "kind=\($kind)"
+                + (if ($m.namespace // "") == "" then "" else " ns=\($m.namespace)" end)
+                + " name=\($m.name) uid=\($m.uid) apiVersion=rbac.authorization.k8s.io/v1"
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + " resource=pods verb=create is_compliant=false"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
+        use_multiple_values: true
         tests:
           test_items:
-            - flag: pods_create_access
-              set: false
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
         remediation: |
           Where possible, remove create access to pod objects in the cluster.
         scored: true
@@ -106,22 +131,31 @@ groups:
       - id: 4.1.5
         text: "Ensure that default service accounts are not actively used. (Automated)"
         audit: |
-          default_sa_count=$(kubectl get serviceaccounts --all-namespaces -o json | jq '
-            [.items[] | select(.metadata.name == "default" and (.automountServiceAccountToken != false))] | length')
-          if [ "$default_sa_count" -gt 0 ]; then
-            echo "default_sa_not_auto_mounted"
-          fi
-          pods_using_default_sa=$(kubectl get pods --all-namespaces -o json | jq '
-            [.items[] | select(.spec.serviceAccountName == "default")] | length')
-          if [ "$pods_using_default_sa" -gt 0 ]; then
-            echo "default_sa_used_in_pods"
-          fi
+          pods=$(kubectl get pods --all-namespaces -o json)
+          kubectl get serviceaccounts --all-namespaces -o json | jq -r --argjson pods "$pods" '
+            [ ( .items[]
+                | select(.metadata.name == "default" and (.automountServiceAccountToken != false))
+                | .metadata as $m
+                | "kind=ServiceAccount ns=\($m.namespace) name=default uid=\($m.uid) apiVersion=v1"
+                  + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                  + " automountServiceAccountToken=\(if .automountServiceAccountToken == null then "unset" else .automountServiceAccountToken end)"
+                  + " reason=token_automounted is_compliant=false" ),
+              ( $pods.items[]
+                | select(.spec.serviceAccountName == "default")
+                | .metadata as $m
+                | "kind=Pod ns=\($m.namespace) name=\($m.name) uid=\($m.uid) apiVersion=v1"
+                  + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                  + (if (.spec.nodeName // "") == "" then "" else " node=\(.spec.nodeName)" end)
+                  + " serviceAccount=default reason=default_sa_in_use is_compliant=false" )
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
+        use_multiple_values: true
         tests:
           test_items:
-            - flag: default_sa_not_auto_mounted
-              set: false
-            - flag: default_sa_used_in_pods
-              set: false
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
         remediation: |
           Create explicit service accounts wherever a Kubernetes workload requires specific
           access to the Kubernetes API server.
@@ -135,16 +169,29 @@ groups:
       - id: 4.1.6
         text: "Ensure that Service Account Tokens are only mounted where necessary (Automated)"
         audit: |
-          pods_with_token_mount=$(kubectl get pods --all-namespaces -o json | jq '
-            [.items[] | select(.spec.automountServiceAccountToken != false)] | length')
-
-          if [ "$pods_with_token_mount" -gt 0 ]; then
-            echo "automountServiceAccountToken"
-          fi
+          kubectl get pods --all-namespaces -o json | jq -r '
+            [ .items[]
+              | .metadata as $m
+              | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
+              | ([ ($m.ownerReferences // [])[] | select(.controller) ] | first) as $own
+              | (.spec.automountServiceAccountToken == false) as $ok
+              | "kind=Pod ns=\($m.namespace) name=\($m.name) uid=\($m.uid) apiVersion=v1"
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + (if (.spec.nodeName // "") == "" then "" else " node=\(.spec.nodeName)" end)
+                + (if $labels == "" then "" else " labels=\($labels)" end)
+                + (if $own == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
+                + " serviceAccount=\(.spec.serviceAccountName // "default")"
+                + " automountServiceAccountToken=\(if .spec.automountServiceAccountToken == null then "unset" else .spec.automountServiceAccountToken end)"
+                + " is_compliant=\(if $ok then "true" else "false" end)"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
+        use_multiple_values: true
         tests:
           test_items:
-            - flag: automountServiceAccountToken
-              set: false
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
         remediation: |
           Regularly review pod and service account objects in the cluster to ensure that the automountServiceAccountToken setting is false for pods and accounts that do not explicitly require API server access.
         scored: true
@@ -216,15 +263,30 @@ groups:
       - id: 4.2.1
         text: "Minimize the admission of privileged containers (Automated)"
         audit: |
-          kubectl get pods --all-namespaces -o json | \
-            jq -r 'if any(.items[]?.spec.containers[]?; .securityContext?.privileged == true) then "PRIVILEGED_FOUND" else "NO_PRIVILEGED" end'
+          kubectl get pods --all-namespaces -o json | jq -r '
+            [ .items[]
+              | .metadata as $m
+              | (.spec.nodeName // "") as $node
+              | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
+              | ([ ($m.ownerReferences // [])[] | select(.controller) ] | first) as $own
+              | (.spec.containers // [])[]
+              | (.securityContext.privileged // false) as $priv
+              | "kind=Pod ns=\($m.namespace) name=\($m.name) uid=\($m.uid) apiVersion=v1"
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + (if $node == "" then "" else " node=\($node)" end)
+                + (if $labels == "" then "" else " labels=\($labels)" end)
+                + (if $own == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
+                + " container=\(.name) image=\(.image) privileged=\($priv)"
+                + " is_compliant=\(if $priv then "false" else "true" end)"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
+        use_multiple_values: true
         tests:
           test_items:
-            - flag: "NO_PRIVILEGED"
-              set: true
+            - flag: "is_compliant"
               compare:
                 op: eq
-                value: "NO_PRIVILEGED"
+                value: true
         remediation: |
           Add policies to each namespace in the cluster which has user workloads to restrict the admission of privileged containers.
             To enable PSA for a namespace in your cluster, set the pod-security.kubernetes.io/enforce label with the policy value you want to enforce.
@@ -237,15 +299,29 @@ groups:
       - id: 4.2.2
         text: "Minimize the admission of containers wishing to share the host process ID namespace (Automated)"
         audit: |
-          kubectl get pods --all-namespaces -o json | \
-            jq -r 'if any(.items[]?; .spec.hostPID == true) then "HOSTPID_FOUND" else "NO_HOSTPID" end'
+          kubectl get pods --all-namespaces -o json | jq -r '
+            [ .items[]
+              | .metadata as $m
+              | (.spec.nodeName // "") as $node
+              | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
+              | ([ ($m.ownerReferences // [])[] | select(.controller) ] | first) as $own
+              | (.spec.hostPID == true) as $bad
+              | "kind=Pod ns=\($m.namespace) name=\($m.name) uid=\($m.uid) apiVersion=v1"
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + (if $node == "" then "" else " node=\($node)" end)
+                + (if $labels == "" then "" else " labels=\($labels)" end)
+                + (if $own == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
+                + " hostPID=\(.spec.hostPID // false)"
+                + " is_compliant=\(if $bad then "false" else "true" end)"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
+        use_multiple_values: true
         tests:
           test_items:
-            - flag: "NO_HOSTPID"
-              set: true
+            - flag: "is_compliant"
               compare:
                 op: eq
-                value: "NO_HOSTPID"
+                value: true
         remediation: |
           Add policies to each namespace in the cluster which has user workloads to restrict the
           admission of hostPID containers.
@@ -254,14 +330,29 @@ groups:
       - id: 4.2.3
         text: "Minimize the admission of containers wishing to share the host IPC namespace (Automated)"
         audit: |
-          kubectl get pods --all-namespaces -o json | jq -r 'if any(.items[]?; .spec.hostIPC == true) then "HOSTIPC_FOUND" else "NO_HOSTIPC" end'
+          kubectl get pods --all-namespaces -o json | jq -r '
+            [ .items[]
+              | .metadata as $m
+              | (.spec.nodeName // "") as $node
+              | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
+              | ([ ($m.ownerReferences // [])[] | select(.controller) ] | first) as $own
+              | (.spec.hostIPC == true) as $bad
+              | "kind=Pod ns=\($m.namespace) name=\($m.name) uid=\($m.uid) apiVersion=v1"
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + (if $node == "" then "" else " node=\($node)" end)
+                + (if $labels == "" then "" else " labels=\($labels)" end)
+                + (if $own == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
+                + " hostIPC=\(.spec.hostIPC // false)"
+                + " is_compliant=\(if $bad then "false" else "true" end)"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
+        use_multiple_values: true
         tests:
           test_items:
-            - flag: "NO_HOSTIPC"
-              set: true
+            - flag: "is_compliant"
               compare:
                 op: eq
-                value: "NO_HOSTIPC"
+                value: true
         remediation: |
           Add policies to each namespace in the cluster which has user workloads to restrict the
           admission of hostIPC containers.
@@ -270,14 +361,29 @@ groups:
       - id: 4.2.4
         text: "Minimize the admission of containers wishing to share the host network namespace (Automated)"
         audit: |
-          kubectl get pods --all-namespaces -o json | jq -r 'if any(.items[]?; .spec.hostNetwork == true) then "HOSTNETWORK_FOUND" else "NO_HOSTNETWORK" end'
+          kubectl get pods --all-namespaces -o json | jq -r '
+            [ .items[]
+              | .metadata as $m
+              | (.spec.nodeName // "") as $node
+              | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
+              | ([ ($m.ownerReferences // [])[] | select(.controller) ] | first) as $own
+              | (.spec.hostNetwork == true) as $bad
+              | "kind=Pod ns=\($m.namespace) name=\($m.name) uid=\($m.uid) apiVersion=v1"
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + (if $node == "" then "" else " node=\($node)" end)
+                + (if $labels == "" then "" else " labels=\($labels)" end)
+                + (if $own == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
+                + " hostNetwork=\(.spec.hostNetwork // false)"
+                + " is_compliant=\(if $bad then "false" else "true" end)"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
+        use_multiple_values: true
         tests:
           test_items:
-            - flag: "NO_HOSTNETWORK"
-              set: true
+            - flag: "is_compliant"
               compare:
                 op: eq
-                value: "NO_HOSTNETWORK"
+                value: true
         remediation: |
           Add policies to each namespace in the cluster which has user workloads to restrict the
           admission of hostNetwork containers.
@@ -286,15 +392,31 @@ groups:
       - id: 4.2.5
         text: "Minimize the admission of containers with allowPrivilegeEscalation (Automated)"
         audit: |
-          kubectl get pods --all-namespaces -o json | \
-            jq -r 'if any(.items[]?.spec.containers[]?; .securityContext?.allowPrivilegeEscalation == true) then "ALLOWPRIVILEGEESCALTION_FOUND" else "NO_ALLOWPRIVILEGEESCALATION" end'
+          kubectl get pods --all-namespaces -o json | jq -r '
+            [ .items[]
+              | .metadata as $m
+              | (.spec.nodeName // "") as $node
+              | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
+              | ([ ($m.ownerReferences // [])[] | select(.controller) ] | first) as $own
+              | (.spec.containers // [])[]
+              | (.securityContext.allowPrivilegeEscalation == true) as $bad
+              | "kind=Pod ns=\($m.namespace) name=\($m.name) uid=\($m.uid) apiVersion=v1"
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + (if $node == "" then "" else " node=\($node)" end)
+                + (if $labels == "" then "" else " labels=\($labels)" end)
+                + (if $own == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
+                + " container=\(.name) image=\(.image)"
+                + " allowPrivilegeEscalation=\(if .securityContext.allowPrivilegeEscalation == null then "unset" else .securityContext.allowPrivilegeEscalation end)"
+                + " is_compliant=\(if $bad then "false" else "true" end)"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
+        use_multiple_values: true
         tests:
           test_items:
-            - flag: "NO_ALLOWPRIVILEGEESCALATION"
-              set: true
+            - flag: "is_compliant"
               compare:
                 op: eq
-                value: "NO_ALLOWPRIVILEGEESCALATION"
+                value: true
         remediation: |
           Add policies to each namespace in the cluster which has user workloads to restrict the
           admission of containers with .spec.allowPrivilegeEscalation set to true.
@@ -315,22 +437,26 @@ groups:
       - id: 4.3.2
         text: "Ensure that all Namespaces have Network Policies defined (Automated)"
         audit: |
-          ns_without_np=$(kubectl get namespaces -o json | jq -r '.items[].metadata.name' | while read ns; do
-            count=$(kubectl get networkpolicy -n $ns --no-headers 2>/dev/null | wc -l)
-            if [ "$count" -eq 0 ]; then echo $ns; fi
-          done)
-          if [ -z "$ns_without_np" ]; then
-            echo "ALL_NAMESPACES_HAVE_NETWORK_POLICIES"
-          else
-            echo "NAMESPACES_WITHOUT_NETWORK_POLICIES: $ns_without_np"
-          fi
+          nps=$(kubectl get networkpolicies --all-namespaces -o json)
+          kubectl get namespaces -o json | jq -r --argjson nps "$nps" '
+            [ .items[]
+              | .metadata as $m
+              | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
+              | ([ $nps.items[] | select(.metadata.namespace == $m.name) ] | length) as $count
+              | "kind=Namespace name=\($m.name) uid=\($m.uid) apiVersion=v1"
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + (if $labels == "" then "" else " labels=\($labels)" end)
+                + " networkPolicies=\($count)"
+                + " is_compliant=\(if $count > 0 then "true" else "false" end)"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
+        use_multiple_values: true
         tests:
           test_items:
-            - flag: "ALL_NAMESPACES_HAVE_NETWORK_POLICIES"
-              set: true
+            - flag: "is_compliant"
               compare:
                 op: eq
-                value: "ALL_NAMESPACES_HAVE_NETWORK_POLICIES"
+                value: true
         remediation: |
           Create at least one NetworkPolicy in each namespace to control and restrict traffic between pods as needed.
         scored: true
@@ -341,19 +467,26 @@ groups:
       - id: 4.4.1
         text: "Prefer using secrets as files over secrets as environment variables (Automated)"
         audit: |
-          result=$(kubectl get all --all-namespaces -o jsonpath='{range .items[?(@..secretKeyRef)]}{.metadata.namespace} {.kind} {.metadata.name}{"\n"}{end}')
-          if [ -z "$result" ]; then
-            echo "NO_SECRETS_AS_ENV_VARS"
-          else
-            echo "SECRETS_AS_ENV_VARS_FOUND: $result"
-          fi
+          kubectl get all --all-namespaces -o json | jq -r '
+            [ .items[]
+              | .kind as $kind | .apiVersion as $api | .metadata as $m
+              | [ .. | objects | select(has("secretKeyRef")) ] as $refs
+              | select(($refs | length) > 0)
+              | "kind=\($kind)"
+                + (if ($m.namespace // "") == "" then "" else " ns=\($m.namespace)" end)
+                + " name=\($m.name) uid=\($m.uid)"
+                + (if ($api // "") == "" then "" else " apiVersion=\($api)" end)
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + " secretEnvRefs=\($refs | length) is_compliant=false"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
+        use_multiple_values: true
         tests:
           test_items:
-            - flag: "NO_SECRETS_AS_ENV_VARS"
-              set: true
+            - flag: "is_compliant"
               compare:
                 op: eq
-                value: "NO_SECRETS_AS_ENV_VARS"
+                value: true
         remediation: |
           If possible, rewrite application code to read secrets from mounted secret files, rather than
           from environment variables.
@@ -381,16 +514,23 @@ groups:
       - id: 4.5.2
         text: "The default namespace should not be used (Automated)"
         audit: |
-          output=$(kubectl get $(kubectl api-resources --verbs=list --namespaced=true -o name | paste -sd, -) --ignore-not-found -n default 2>/dev/null | grep -v "^kubernetes ")
-          if [ -z "$output" ]; then
-            echo "NO_USER_RESOURCES_IN_DEFAULT"
-          else
-            echo "USER_RESOURCES_IN_DEFAULT_FOUND: $output"
-          fi
+          kubectl get $(kubectl api-resources --verbs=list --namespaced=true -o name | paste -sd, -) --ignore-not-found -n default -o json | jq -r '
+            [ .items[]
+              | .kind as $kind | .apiVersion as $api | .metadata as $m
+              | select($kind != "Service" or $m.name != "kubernetes")
+              | "kind=\($kind) ns=default name=\($m.name) uid=\($m.uid)"
+                + (if ($api // "") == "" then "" else " apiVersion=\($api)" end)
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + " is_compliant=false"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
+        use_multiple_values: true
         tests:
           test_items:
-            - flag: "NO_USER_RESOURCES_IN_DEFAULT"
-              set: true
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
         remediation: |
           Create and use dedicated namespaces for resources instead of the default namespace. Move any user-defined objects out of the default namespace to improve resource segregation and RBAC control.
         scored: true
