@@ -12,24 +12,24 @@ groups:
         text: "Ensure that the cluster-admin role is only used where required (Manual)"
         audit: |
           kubectl get clusterrolebindings -o json | jq -r '
-            [
-              .items[]
+            [ .items[]
               | select(.roleRef.name == "cluster-admin")
-              | .subjects[]?
-              | select(.kind != "Group" or .name != "system:masters")
-            ]
-            | if length == 0
-              then "NO_CLUSTER_ADMIN_BINDINGS"
-              else "FOUND_CLUSTER_ADMIN_BINDING"
-              end
-          '
+              | .metadata as $m
+              | ((.subjects // [])[] | select(.kind != "Group" or .name != "system:masters"))
+              | "kind=ClusterRoleBinding name=\($m.name) uid=\($m.uid) apiVersion=rbac.authorization.k8s.io/v1"
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + " subjectKind=\(.kind) subject=\(.name)"
+                + (if (.namespace // "") == "" then "" else " subjectNamespace=\(.namespace)" end)
+                + " roleRef=cluster-admin is_compliant=false"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
+        use_multiple_values: true
         tests:
           test_items:
-            - flag: "NO_CLUSTER_ADMIN_BINDINGS"
-              set: true
+            - flag: "is_compliant"
               compare:
                 op: eq
-                value: "NO_CLUSTER_ADMIN_BINDINGS"
+                value: true
         remediation: |
           Identify all ClusterRoleBindings to the "cluster-admin" role and review their subjects:
 
@@ -48,20 +48,26 @@ groups:
       - id: 4.1.2
         text: "Minimize access to secrets (Manual)"
         audit: |
-          count=$(kubectl get roles --all-namespaces -o json | jq '
-            .items[]
-            | select(.rules[]?
-              | (.resources[]? == "secrets")
-              and ((.verbs[]? == "get") or (.verbs[]? == "list") or (.verbs[]? == "watch"))
-            )' | wc -l)
-
-          if [ "$count" -gt 0 ]; then
-            echo "SECRETS_ACCESS_FOUND"
-          fi
+          kubectl get roles --all-namespaces -o json | jq -r '
+            [ .items[]
+              | .metadata as $m
+              | [ .rules[]?
+                  | select((any(.resources[]?; . == "secrets"))
+                    and (any(.verbs[]?; . == "get" or . == "list" or . == "watch")))
+                  | (.verbs // []) | join(",") ] as $verbs
+              | select(($verbs | length) > 0)
+              | "kind=Role ns=\($m.namespace) name=\($m.name) uid=\($m.uid) apiVersion=rbac.authorization.k8s.io/v1"
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + " resource=secrets verbs=\($verbs | join("|")) is_compliant=false"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
+        use_multiple_values: true
         tests:
           test_items:
-            - flag: "SECRETS_ACCESS_FOUND"
-              set: false
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
         remediation: |
           Where possible, remove get, list and watch access to Secret objects in the cluster.
         scored: true
@@ -69,25 +75,26 @@ groups:
       - id: 4.1.3
         text: "Minimize wildcard use in Roles and ClusterRoles (Manual)"
         audit: |
-          wildcards=$(kubectl get roles --all-namespaces -o json | jq '
-            .items[] | select(
-              .rules[]? | (.verbs[]? == "*" or .resources[]? == "*" or .apiGroups[]? == "*")
-            )' | wc -l)
-
-          wildcards_clusterroles=$(kubectl get clusterroles -o json | jq '
-            .items[] | select(
-              .rules[]? | (.verbs[]? == "*" or .resources[]? == "*" or .apiGroups[]? == "*")
-            )' | wc -l)
-
-          total=$((wildcards + wildcards_clusterroles))
-
-          if [ "$total" -gt 0 ]; then
-            echo "wildcards_present"
-          fi
+          kubectl get roles,clusterroles --all-namespaces -o json | jq -r '
+            [ .items[]
+              | .kind as $kind | .metadata as $m
+              | [ .rules[]?
+                  | select((any(.verbs[]?; . == "*")) or (any(.resources[]?; . == "*")) or (any(.apiGroups[]?; . == "*"))) ] as $wild
+              | select(($wild | length) > 0)
+              | "kind=\($kind)"
+                + (if ($m.namespace // "") == "" then "" else " ns=\($m.namespace)" end)
+                + " name=\($m.name) uid=\($m.uid) apiVersion=rbac.authorization.k8s.io/v1"
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + " wildcardRules=\($wild | length) is_compliant=false"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
+        use_multiple_values: true
         tests:
           test_items:
-            - flag: wildcards_present
-              set: false
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
         remediation: |
           Where possible replace any use of wildcards in clusterroles and roles with specific
           objects or actions.
@@ -96,25 +103,31 @@ groups:
       - id: 4.1.4
         text: "Ensure that default service accounts are not actively used (Automated)"
         audit: |
-          echo "🔹 Default Service Accounts with automountServiceAccountToken enabled:"
-          default_sa_count=$(kubectl get serviceaccounts --all-namespaces -o json | jq '
-            [.items[] | select(.metadata.name == "default" and (.automountServiceAccountToken != false))] | length')
-          if [ "$default_sa_count" -gt 0 ]; then
-            echo "default_sa_not_auto_mounted"
-          fi
-
-          echo "\n🔹 Pods using default ServiceAccount:"
-          pods_using_default_sa=$(kubectl get pods --all-namespaces -o json | jq '
-            [.items[] | select(.spec.serviceAccountName == "default")] | length')
-          if [ "$pods_using_default_sa" -gt 0 ]; then
-            echo "default_sa_used_in_pods"
-          fi
+          pods=$(kubectl get pods --all-namespaces -o json)
+          kubectl get serviceaccounts --all-namespaces -o json | jq -r --argjson pods "$pods" '
+            [ ( .items[]
+                | select(.metadata.name == "default" and (.automountServiceAccountToken != false))
+                | .metadata as $m
+                | "kind=ServiceAccount ns=\($m.namespace) name=default uid=\($m.uid) apiVersion=v1"
+                  + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                  + " automountServiceAccountToken=\(if .automountServiceAccountToken == null then "notset" else .automountServiceAccountToken end)"
+                  + " reason=token_automounted is_compliant=false" ),
+              ( $pods.items[]
+                | select(.spec.serviceAccountName == "default")
+                | .metadata as $m
+                | "kind=Pod ns=\($m.namespace) name=\($m.name) uid=\($m.uid) apiVersion=v1"
+                  + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                  + (if (.spec.nodeName // "") == "" then "" else " node=\(.spec.nodeName)" end)
+                  + " serviceAccount=default reason=default_sa_in_use is_compliant=false" )
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
+        use_multiple_values: true
         tests:
           test_items:
-            - flag: default_sa_not_auto_mounted
-              set: false
-            - flag: default_sa_used_in_pods
-              set: false
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
         remediation: |
           Create explicit service accounts wherever a Kubernetes workload requires specific
           access to the Kubernetes API server.
@@ -127,17 +140,29 @@ groups:
       - id: 4.1.5
         text: "Ensure that Service Account Tokens are only mounted where necessary (Manual)"
         audit: |
-          echo "🔹 Pods with automountServiceAccountToken enabled:"
-          pods_with_token_mount=$(kubectl get pods --all-namespaces -o json | jq '
-            [.items[] | select(.spec.automountServiceAccountToken != false)] | length')
-
-          if [ "$pods_with_token_mount" -gt 0 ]; then
-            echo "automountServiceAccountToken"
-          fi
+          kubectl get pods --all-namespaces -o json | jq -r '
+            [ .items[]
+              | .metadata as $m
+              | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
+              | ([ ($m.ownerReferences // [])[] | select(.controller) ] | first) as $own
+              | (.spec.automountServiceAccountToken == false) as $ok
+              | "kind=Pod ns=\($m.namespace) name=\($m.name) uid=\($m.uid) apiVersion=v1"
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + (if (.spec.nodeName // "") == "" then "" else " node=\(.spec.nodeName)" end)
+                + (if $labels == "" then "" else " labels=\($labels)" end)
+                + (if $own == null then "" else " owner=\($own.kind)/\($m.namespace)/\($own.name)/\($own.uid)" end)
+                + " serviceAccount=\(.spec.serviceAccountName // "default")"
+                + " automountServiceAccountToken=\(if .spec.automountServiceAccountToken == null then "notset" else .spec.automountServiceAccountToken end)"
+                + " is_compliant=\(if $ok then "true" else "false" end)"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
+        use_multiple_values: true
         tests:
           test_items:
-            - flag: automountServiceAccountToken
-              set: false
+            - flag: "is_compliant"
+              compare:
+                op: eq
+                value: true
         remediation: |
           Modify the definition of pods and service accounts which do not need to mount service
           account tokens to disable it.
@@ -146,26 +171,33 @@ groups:
       - id: 4.1.6
         text: "Avoid use of system:masters group (Automated)"
         audit: |
+          # The openssl decode stays — jq cannot parse a PKCS#10 request. Only the output
+          # shape changed, so each offending CSR is now named individually.
           found=0
           for csr in $(kubectl get csr -o name 2>/dev/null | sed 's|^.*/||'); do
-            req=$(kubectl get csr "$csr" -o jsonpath='{.spec.request}' 2>/dev/null)
-            [ -z "$req" ] && continue
-            if echo "$req" | base64 -d 2>/dev/null | openssl req -noout -text 2>/dev/null | grep -q 'O = system:masters'; then
-              conds=$(kubectl get csr "$csr" -o json | jq -r '[.status.conditions[]?.type] | join(",")')
-              echo "FOUND_SYSTEM_MASTERS_CSR:${csr}:${conds:-NONE}"
+            req=$(kubectl get csr "${csr}" -o jsonpath='{.spec.request}' 2>/dev/null)
+            [ -z "${req}" ] && continue
+            if echo "${req}" | base64 -d 2>/dev/null | openssl req -noout -text 2>/dev/null | grep -q 'O = system:masters'; then
+              kubectl get csr "${csr}" -o json | jq -r '
+                .metadata as $m
+                | "kind=CertificateSigningRequest name=\($m.name) uid=\($m.uid) apiVersion=certificates.k8s.io/v1"
+                  + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                  + " organization=system:masters"
+                  + " conditions=\((([.status.conditions[]?.type] | join(",")) // "") | if . == "" then "NONE" else . end)"
+                  + " is_compliant=false"'
               found=1
             fi
           done
-          if [ "$found" -eq 0 ]; then
-            echo "NO_SYSTEM_MASTERS_CREDENTIALS_FOUND"
+          if [ "${found}" -eq 0 ]; then
+            echo "is_compliant=true"
           fi
+        use_multiple_values: true
         tests:
           test_items:
-            - flag: "NO_SYSTEM_MASTERS_CREDENTIALS_FOUND"
-              set: true
+            - flag: "is_compliant"
               compare:
                 op: eq
-                value: "NO_SYSTEM_MASTERS_CREDENTIALS_FOUND"
+                value: true
         remediation: |
           Remove the system:masters group from all users in the cluster.
         scored: true
@@ -210,32 +242,35 @@ groups:
         text: "Avoid bindings to system:anonymous (Automated)"
         audit: |
           # Flags any ClusterRoleBinding/RoleBinding that targets the user "system:anonymous".
-          # Prints "NO_ANONYMOUS_BINDINGS" when none are found.
           (
             kubectl get clusterrolebindings -o json | jq -r '
               .items[]
               | select((.subjects | length) > 0)
-              | select(any(.subjects[]?;
-                  .kind=="User" and .name=="system:anonymous"
-                ))
-              | "FOUND_ANONYMOUS:ClusterRoleBinding:\(.metadata.name):ROLE=\(.roleRef.kind)/\(.roleRef.name)"
+              | select(any(.subjects[]?; .kind == "User" and .name == "system:anonymous"))
+              | .metadata as $m
+              | "kind=ClusterRoleBinding name=\($m.name) uid=\($m.uid) apiVersion=rbac.authorization.k8s.io/v1"
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + " subject=system:anonymous roleRef=\(.roleRef.kind)/\(.roleRef.name) is_compliant=false"
             ';
             kubectl get rolebindings -A -o json | jq -r '
               .items[]
               | select((.subjects | length) > 0)
-              | select(any(.subjects[]?;
-                  .kind=="User" and .name=="system:anonymous"
-                ))
-              | "FOUND_ANONYMOUS:RoleBinding:\(.metadata.namespace):\(.metadata.name):ROLE=\(.roleRef.kind)/\(.roleRef.name)"
+              | select(any(.subjects[]?; .kind == "User" and .name == "system:anonymous"))
+              | .metadata as $m
+              | "kind=RoleBinding"
+                + (if ($m.namespace // "") == "" then "" else " ns=\($m.namespace)" end)
+                + " name=\($m.name) uid=\($m.uid) apiVersion=rbac.authorization.k8s.io/v1"
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + " subject=system:anonymous roleRef=\(.roleRef.kind)/\(.roleRef.name) is_compliant=false"
             '
-          ) | (grep -q '^FOUND_ANONYMOUS:' && cat || echo 'NO_ANONYMOUS_BINDINGS')
+          ) | (grep -q '^kind=' && cat || echo 'is_compliant=true')
+        use_multiple_values: true
         tests:
           test_items:
-            - flag: "NO_ANONYMOUS_BINDINGS"
-              set: true
+            - flag: "is_compliant"
               compare:
                 op: eq
-                value: "NO_ANONYMOUS_BINDINGS"
+                value: true
         remediation: |
           Identify all clusterrolebindings and rolebindings to the user system:anonymous.
           Check if they are used and review the permissions associated with the binding using the
@@ -256,33 +291,36 @@ groups:
         text: "Avoid non-default bindings to system:unauthenticated (Automated)"
         audit: |
           # Flags any non-default binding to the group "system:unauthenticated".
-          # Prints "NO_NON_DEFAULT_UNAUTH_BINDINGS" when none are found.
           (
             kubectl get clusterrolebindings -o json | jq -r '
               .items[]
               | select(.metadata.name != "system:public-info-viewer")
               | select((.subjects | length) > 0)
-              | select(any(.subjects[]?;
-                  .kind=="Group" and .name=="system:unauthenticated"
-                ))
-              | "FOUND_UNAUTH:ClusterRoleBinding:\(.metadata.name):ROLE=\(.roleRef.kind)/\(.roleRef.name)"
+              | select(any(.subjects[]?; .kind == "Group" and .name == "system:unauthenticated"))
+              | .metadata as $m
+              | "kind=ClusterRoleBinding name=\($m.name) uid=\($m.uid) apiVersion=rbac.authorization.k8s.io/v1"
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + " subject=system:unauthenticated roleRef=\(.roleRef.kind)/\(.roleRef.name) is_compliant=false"
             ';
             kubectl get rolebindings -A -o json | jq -r '
               .items[]
               | select((.subjects | length) > 0)
-              | select(any(.subjects[]?;
-                  .kind=="Group" and .name=="system:unauthenticated"
-                ))
-              | "FOUND_UNAUTH:RoleBinding:\(.metadata.namespace):\(.metadata.name):ROLE=\(.roleRef.kind)/\(.roleRef.name)"
+              | select(any(.subjects[]?; .kind == "Group" and .name == "system:unauthenticated"))
+              | .metadata as $m
+              | "kind=RoleBinding"
+                + (if ($m.namespace // "") == "" then "" else " ns=\($m.namespace)" end)
+                + " name=\($m.name) uid=\($m.uid) apiVersion=rbac.authorization.k8s.io/v1"
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + " subject=system:unauthenticated roleRef=\(.roleRef.kind)/\(.roleRef.name) is_compliant=false"
             '
-          ) | (grep -q "^FOUND_UNAUTH:" && cat || echo "NO_NON_DEFAULT_UNAUTH_BINDINGS")
+          ) | (grep -q "^kind=" && cat || echo "is_compliant=true")
+        use_multiple_values: true
         tests:
           test_items:
-            - flag: "NO_NON_DEFAULT_UNAUTH_BINDINGS"
-              set: true
+            - flag: "is_compliant"
               compare:
                 op: eq
-                value: "NO_NON_DEFAULT_UNAUTH_BINDINGS"
+                value: true
         remediation: |
           Identify all non-default clusterrolebindings and rolebindings to the group
           system:unauthenticated. Check if they are used and review the permissions
@@ -306,33 +344,36 @@ groups:
         audit: |
           # Flags any non-default binding to the group "system:authenticated".
           # Allowed defaults (CRB): system:basic-user, system:discovery
-          # Prints "NO_NON_DEFAULT_AUTH_BINDINGS" when none are found.
           (
             kubectl get clusterrolebindings -o json | jq -r '
               .items[]
               | select((.metadata.name != "system:basic-user") and (.metadata.name != "system:discovery"))
               | select((.subjects | length) > 0)
-              | select(any(.subjects[]?;
-                  .kind=="Group" and .name=="system:authenticated"
-                ))
-              | "FOUND_AUTH:ClusterRoleBinding:\(.metadata.name):ROLE=\(.roleRef.kind)/\(.roleRef.name)"
+              | select(any(.subjects[]?; .kind == "Group" and .name == "system:authenticated"))
+              | .metadata as $m
+              | "kind=ClusterRoleBinding name=\($m.name) uid=\($m.uid) apiVersion=rbac.authorization.k8s.io/v1"
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + " subject=system:authenticated roleRef=\(.roleRef.kind)/\(.roleRef.name) is_compliant=false"
             ';
             kubectl get rolebindings -A -o json | jq -r '
               .items[]
               | select((.subjects | length) > 0)
-              | select(any(.subjects[]?;
-                  .kind=="Group" and .name=="system:authenticated"
-                ))
-              | "FOUND_AUTH:RoleBinding:\(.metadata.namespace):\(.metadata.name):ROLE=\(.roleRef.kind)/\(.roleRef.name)"
+              | select(any(.subjects[]?; .kind == "Group" and .name == "system:authenticated"))
+              | .metadata as $m
+              | "kind=RoleBinding"
+                + (if ($m.namespace // "") == "" then "" else " ns=\($m.namespace)" end)
+                + " name=\($m.name) uid=\($m.uid) apiVersion=rbac.authorization.k8s.io/v1"
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + " subject=system:authenticated roleRef=\(.roleRef.kind)/\(.roleRef.name) is_compliant=false"
             '
-          ) | (grep -q "^FOUND_AUTH:" && cat || echo "NO_NON_DEFAULT_AUTH_BINDINGS")
+          ) | (grep -q "^kind=" && cat || echo "is_compliant=true")
+        use_multiple_values: true
         tests:
           test_items:
-            - flag: "NO_NON_DEFAULT_AUTH_BINDINGS"
-              set: true
+            - flag: "is_compliant"
               compare:
                 op: eq
-                value: "NO_NON_DEFAULT_AUTH_BINDINGS"
+                value: true
         remediation: |
           Identify all non-default clusterrolebindings and rolebindings to the group
           system:authenticated. Check if they are used and review the permissions associated
@@ -385,30 +426,32 @@ groups:
         audit: |
           (kubectl get ns -o json; kubectl get networkpolicy -A -o json) \
           | jq -rs '
-            (.[0].items | map(.metadata.name)
-             | map(select(.!="kube-system" and .!="kube-public" and .!="kube-node-lease"))) as $ns
-            |
             ( (.[1].items // [])
               | sort_by(.metadata.namespace)
               | group_by(.metadata.namespace)
               | map({key: .[0].metadata.namespace, value: length})
               | from_entries
             ) as $np
-            |
-            [ $ns[] | select( ($np[.] // 0) == 0 ) ] as $missing
-            |
-            if ($missing|length)>0
-            then ($missing[] | "FOUND_NAMESPACE_WITHOUT_NETWORKPOLICY:"+.)
-            else "ALL_NAMESPACES_HAVE_NETWORK_POLICIES"
-            end
+            | [ .[0].items[]
+                | select(.metadata.name as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
+                | .metadata as $m
+                | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
+                | ($np[$m.name] // 0) as $count
+                | "kind=Namespace name=\($m.name) uid=\($m.uid) apiVersion=v1"
+                  + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                  + (if $labels == "" then "" else " labels=\($labels)" end)
+                  + " networkPolicies=\($count)"
+                  + " is_compliant=\(if $count > 0 then "true" else "false" end)"
+              ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end
           '
+        use_multiple_values: true
         tests:
           test_items:
-            - flag: "ALL_NAMESPACES_HAVE_NETWORK_POLICIES"
-              set: true
+            - flag: "is_compliant"
               compare:
                 op: eq
-                value: "ALL_NAMESPACES_HAVE_NETWORK_POLICIES"
+                value: true
         remediation: |
           Follow the documentation and create NetworkPolicy objects as needed.
           See: https://cloud.google.com/kubernetes-engine/docs/how-to/network-policy#creating_a_network_policy
@@ -421,15 +464,26 @@ groups:
       - id: 4.4.1
         text: "Prefer using secrets as files over secrets as environment variables (Automated)"
         audit: |
-          output=$(kubectl get all --all-namespaces -o jsonpath='{range .items[?(@..secretKeyRef)]} {.kind} {.metadata.name} {"\n"}{end}')
-          if [ -z "$output" ]; then echo "NO_ENV_SECRET_REFERENCES"; else echo "ENV_SECRET_REFERENCES_FOUND"; fi
+          kubectl get all --all-namespaces -o json | jq -r '
+            [ .items[]
+              | .kind as $kind | .apiVersion as $api | .metadata as $m
+              | [ .. | objects | select(has("secretKeyRef")) ] as $refs
+              | select(($refs | length) > 0)
+              | "kind=\($kind)"
+                + (if ($m.namespace // "") == "" then "" else " ns=\($m.namespace)" end)
+                + " name=\($m.name) uid=\($m.uid)"
+                + (if ($api // "") == "" then "" else " apiVersion=\($api)" end)
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + " secretEnvRefs=\($refs | length) is_compliant=false"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
+        use_multiple_values: true
         tests:
           test_items:
-            - flag: "NO_ENV_SECRET_REFERENCES"
-              set: true
+            - flag: "is_compliant"
               compare:
                 op: eq
-                value: "NO_ENV_SECRET_REFERENCES"
+                value: true
         remediation: |
           If possible, rewrite application code to read secrets from mounted secret files, rather than
           from environment variables.
@@ -496,15 +550,23 @@ groups:
       - id: 4.6.4
         text: "The default namespace should not be used (Manual)"
         audit: |
-          output=$(kubectl get all -n default --no-headers 2>/dev/null | grep -v '^service\s\+kubernetes\s' || true)
-          if [ -z "$output" ]; then echo "DEFAULT_NAMESPACE_UNUSED"; else echo "DEFAULT_NAMESPACE_IN_USE"; fi
+          kubectl get all -n default -o json | jq -r '
+            [ .items[]
+              | .kind as $kind | .apiVersion as $api | .metadata as $m
+              | select($kind != "Service" or $m.name != "kubernetes")
+              | "kind=\($kind) ns=default name=\($m.name) uid=\($m.uid)"
+                + (if ($api // "") == "" then "" else " apiVersion=\($api)" end)
+                + (if ($m.creationTimestamp // "") == "" then "" else " created=\($m.creationTimestamp)" end)
+                + " is_compliant=false"
+            ] as $rows
+            | if ($rows | length) == 0 then "is_compliant=true" else $rows[] end'
+        use_multiple_values: true
         tests:
           test_items:
-            - flag: "DEFAULT_NAMESPACE_UNUSED"
-              set: true
+            - flag: "is_compliant"
               compare:
                 op: eq
-                value: "DEFAULT_NAMESPACE_UNUSED"
+                value: true
         remediation: |
           Ensure that namespaces are created to allow for appropriate segregation of Kubernetes
           resources and that all new resources are created in a specific namespace.
