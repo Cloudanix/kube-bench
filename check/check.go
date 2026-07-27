@@ -280,17 +280,22 @@ func (c *Check) addNodeResource(target NodeType, nodeName string) {
 	if c.State != FAIL && c.State != WARN {
 		return
 	}
-	// Manual and skipped checks never ran an audit; naming a node for them is noise.
-	if strings.TrimSpace(c.ActualValue) == "" {
+	// Manual and skipped checks short-circuit in run() before their audit executes, and a
+	// check with no test_items never runs one either; neither says anything about a node.
+	// Every other check here did run, and its failure belongs to this machine even when the
+	// audit printed nothing at all — `if test -e <file>` is silent when the file is absent,
+	// and `ps -fC kubelet` is silent when the process is not running. Those are findings
+	// about the node, so they get named rather than dropped for having no output.
+	if c.Type == MANUAL || c.Type == SKIP || c.Tests == nil || len(c.Tests.TestItems) == 0 {
 		return
 	}
 
 	fr := FailedResource{Kind: "Node", Name: nodeName, Attributes: c.testedValues()}
-	if f := c.auditedFile(); f != "" {
+	if audited := c.auditedFile(); audited != "" {
 		if fr.Attributes == nil {
 			fr.Attributes = map[string]string{}
 		}
-		fr.Attributes["file"] = f
+		fr.Attributes["file"] = audited
 	}
 	c.FailedResources = []FailedResource{fr}
 }

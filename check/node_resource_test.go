@@ -98,10 +98,55 @@ func TestAddNodeResource(t *testing.T) {
 			wantLen: 0,
 		},
 		{
-			name:    "manual check gets nothing",
-			target:  NODE,
-			check:   Check{State: WARN, Reason: "Test marked as a manual test"},
+			// A manual check's audit never executes, so it says nothing about the node
+			// even though it carries audit text.
+			name:   "manual check gets nothing",
+			target: NODE,
+			check: Check{
+				State: WARN, Type: MANUAL, Reason: "Test marked as a manual test",
+				Audit: "/bin/cat /etc/kubernetes/manifests/kube-apiserver.yaml",
+				Tests: &tests{TestItems: []*testItem{{Flag: "anything"}}},
+			},
 			wantLen: 0,
+		},
+		{
+			name:    "check with no test_items gets nothing - its audit never ran either",
+			target:  NODE,
+			check:   Check{State: WARN, Reason: "There are no tests"},
+			wantLen: 0,
+		},
+		{
+			// `ps -fC kubelet` prints nothing and exits non-zero when the process is not
+			// running, so there is no output and no file - but the node is still the
+			// subject of the finding.
+			name:   "process audit with nothing running still names the node",
+			target: MASTER,
+			check: Check{
+				State:       FAIL,
+				ActualValue: "",
+				Audit:       "/bin/ps -fC kube-apiserver",
+				Reason:      "failed to run: \"/bin/ps -fC kube-apiserver\", error: exit status 1",
+				Tests: &tests{TestItems: []*testItem{
+					{Flag: "--anonymous-auth", Compare: compare{Op: "eq", Value: "false"}},
+				}},
+			},
+			wantLen: 1,
+		},
+		{
+			// `if test -e <file>` prints nothing when the file is absent, so the check
+			// fails with no output at all. That is still a finding about a real node.
+			name:   "guarded audit whose file is absent still names the node",
+			target: NODE,
+			check: Check{
+				State:       FAIL,
+				ActualValue: "",
+				Audit:       `/bin/sh -c 'if test -e /etc/kubernetes/kubelet.conf; then stat -c permissions=%a /etc/kubernetes/kubelet.conf; fi'`,
+				Tests: &tests{TestItems: []*testItem{
+					{Flag: "permissions", Compare: compare{Op: "bitmask", Value: "644"}},
+				}},
+			},
+			wantLen: 1,
+			attrs:   map[string]string{"file": "/etc/kubernetes/kubelet.conf"},
 		},
 		{
 			name:   "kubectl target is left to parseFailedResource",
