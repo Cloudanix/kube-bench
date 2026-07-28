@@ -106,6 +106,9 @@ func parseFailedResource(row string) (FailedResource, bool) {
 	if !strings.Contains(row, "kind=") {
 		return FailedResource{}, false
 	}
+	// One row contributes at most one attribute set; resourceSet appends further sets when
+	// other rows name the same object.
+	attrs := map[string]string{}
 	for _, m := range kvTokenRe.FindAllStringSubmatch(row, -1) {
 		k, v := m[1], m[2]
 		switch k {
@@ -139,11 +142,11 @@ func parseFailedResource(row string) (FailedResource, bool) {
 		case "is_compliant":
 			// the verdict the compare op reads, not metadata
 		default:
-			if fr.Attributes == nil {
-				fr.Attributes = map[string]string{}
-			}
-			fr.Attributes[k] = v
+			attrs[k] = v
 		}
+	}
+	if len(attrs) > 0 {
+		fr.Attributes = []map[string]string{attrs}
 	}
 	// A workload or node row is useless without a name. A cluster row is not: which cluster
 	// this is already travels on the POST, so the row only has to declare its scope.
@@ -302,8 +305,7 @@ func (t testItem) execute(s string) *testOutput {
 	// Multi-output checks visit every row so the full failing set is collected, but the
 	// result still comes from the FIRST failing row (all-pass still ends on the last row),
 	// so pass/fail semantics are unchanged. Single-output keeps the original early break.
-	var failedRes []FailedResource
-	seen := map[string]bool{}
+	var failedRes resourceSet
 	failed := false
 	for _, op := range output {
 		row := t.evaluate(op)
@@ -313,10 +315,7 @@ func (t testItem) execute(s string) *testOutput {
 				failed = true
 			}
 			if fr, ok := parseFailedResource(op); ok {
-				if k := fr.key(); !seen[k] {
-					seen[k] = true
-					failedRes = append(failedRes, fr)
-				}
+				failedRes.add(fr)
 			}
 			if !t.isMultipleOutput {
 				break
@@ -327,7 +326,7 @@ func (t testItem) execute(s string) *testOutput {
 	}
 
 	result.actualResult = s
-	result.failedResources = failedRes
+	result.failedResources = failedRes.list
 	return result
 }
 

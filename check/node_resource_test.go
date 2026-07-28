@@ -190,11 +190,12 @@ func TestAddNodeResource(t *testing.T) {
 			if fr.Scope != ScopeNode {
 				t.Errorf("scope = %q, want %q", fr.Scope, ScopeNode)
 			}
-			if len(fr.Attributes) != len(tc.attrs) {
-				t.Fatalf("attributes = %v, want %v", fr.Attributes, tc.attrs)
+			// A node resource comes from one check, so it carries exactly one attribute set.
+			if len(fr.Attributes) != 1 || len(fr.Attributes[0]) != len(tc.attrs) {
+				t.Fatalf("attributes = %v, want one set %v", fr.Attributes, tc.attrs)
 			}
 			for k, want := range tc.attrs {
-				if got := fr.Attributes[k]; got != want {
+				if got := fr.Attributes[0][k]; got != want {
 					t.Errorf("attribute %s = %q, want %q", k, got, want)
 				}
 			}

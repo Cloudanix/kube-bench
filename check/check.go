@@ -141,7 +141,11 @@ type FailedResource struct {
 	Node              string            `json:"node,omitempty"`
 	Labels            map[string]string `json:"labels,omitempty"`
 	Owners            []ParentResource  `json:"owners,omitempty"`
-	Attributes        map[string]string `json:"attributes,omitempty"`
+	// Attributes carries one map per audit row that named this object. A single object can
+	// fail a check several ways at once — a ClusterRoleBinding with four bad subjects, a Pod
+	// with two privileged containers — and each of those rows keeps its own attribute set
+	// here rather than becoming a duplicate resource. See resourceSet.
+	Attributes []map[string]string `json:"attributes,omitempty"`
 }
 
 // ParentResource is a controller ownerReference. Subset of inventory's ParentResource.
@@ -152,20 +156,60 @@ type ParentResource struct {
 	UID       string `json:"uid,omitempty"`
 }
 
-// key identifies a FailedResource for dedup: identity plus its attribute set, so two
-// failing containers in the same pod stay two entries.
+// key identifies a FailedResource by identity alone. Attributes are deliberately excluded:
+// the same object failing a check several ways must come back as ONE resource carrying
+// several attribute sets, not as several resources sharing a uid.
 func (f FailedResource) key() string {
-	var b strings.Builder
-	b.WriteString(string(f.Scope) + "/" + f.Kind + "/" + f.Namespace + "/" + f.Name + "/" + f.UID)
-	ks := make([]string, 0, len(f.Attributes))
-	for k := range f.Attributes {
+	return string(f.Scope) + "/" + f.Kind + "/" + f.Namespace + "/" + f.Name + "/" + f.UID
+}
+
+// attrKey canonicalizes one attribute set, so a row repeated verbatim (the same audit run
+// twice against Audit and AuditConfig) does not add the same map twice.
+func attrKey(m map[string]string) string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
 		ks = append(ks, k)
 	}
 	sort.Strings(ks)
+	var b strings.Builder
 	for _, k := range ks {
-		b.WriteString("|" + k + "=" + f.Attributes[k])
+		b.WriteString(k + "=" + m[k] + "|")
 	}
 	return b.String()
+}
+
+// resourceSet accumulates FailedResources unique on identity, merging the attribute sets of
+// every row that named the same object. It is the single place duplicate resources are
+// collapsed — both the per-test_item loop and the per-check union feed through it.
+type resourceSet struct {
+	idx  map[string]int
+	list []FailedResource
+}
+
+func (s *resourceSet) add(fr FailedResource) {
+	if s.idx == nil {
+		s.idx = map[string]int{}
+	}
+	k := fr.key()
+	i, ok := s.idx[k]
+	if !ok {
+		s.idx[k] = len(s.list)
+		s.list = append(s.list, fr)
+		return
+	}
+	// Same object, seen again: keep the first row's identity metadata and collect the new
+	// attribute sets. Labels/owners come off the same object, so they are already identical.
+	e := &s.list[i]
+	seen := map[string]bool{}
+	for _, a := range e.Attributes {
+		seen[attrKey(a)] = true
+	}
+	for _, a := range fr.Attributes {
+		if ak := attrKey(a); !seen[ak] {
+			seen[ak] = true
+			e.Attributes = append(e.Attributes, a)
+		}
+	}
 }
 
 // Runner wraps the basic Run method.
@@ -314,12 +358,16 @@ func (c *Check) addNodeResource(target NodeType, nodeName string) {
 		return
 	}
 
-	fr := FailedResource{Kind: "Node", Scope: ScopeNode, Name: nodeName, Attributes: c.testedValues()}
+	fr := FailedResource{Kind: "Node", Scope: ScopeNode, Name: nodeName}
+	attrs := c.testedValues()
 	if audited := c.auditedFile(); audited != "" {
-		if fr.Attributes == nil {
-			fr.Attributes = map[string]string{}
+		if attrs == nil {
+			attrs = map[string]string{}
 		}
-		fr.Attributes["file"] = audited
+		attrs["file"] = audited
+	}
+	if len(attrs) > 0 {
+		fr.Attributes = []map[string]string{attrs}
 	}
 	c.FailedResources = []FailedResource{fr}
 }
@@ -523,18 +571,16 @@ func (c *Check) execute() (finalOutput *testOutput, err error) {
 	finalOutput.testResult = result
 	finalOutput.actualResult = res[0].actualResult
 
-	// Union the per-test_item failed resources. The seen map is load-bearing even for a
-	// single test_item: (*Check).execute may re-run an item against the auditConfig /
-	// auditEnv output, and container-scoped checks emit one row per container.
-	seen := map[string]bool{}
+	// Union the per-test_item failed resources. Merging is load-bearing even for a single
+	// test_item: (*Check).execute may re-run an item against the auditConfig / auditEnv
+	// output, and container-scoped checks emit one row per container.
+	var merged resourceSet
 	for i := range res {
 		for _, fr := range res[i].failedResources {
-			if k := fr.key(); !seen[k] {
-				seen[k] = true
-				finalOutput.failedResources = append(finalOutput.failedResources, fr)
-			}
+			merged.add(fr)
 		}
 	}
+	finalOutput.failedResources = merged.list
 
 	glog.V(3).Infof("Returning from execute on tests: finalOutput %#v", finalOutput)
 	return finalOutput, nil

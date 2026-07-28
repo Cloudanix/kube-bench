@@ -52,9 +52,9 @@ func TestParseFailedResource(t *testing.T) {
 				Owners: []ParentResource{
 					{Kind: "ReplicaSet", Namespace: "default", Name: "web-7d9f8b6c4", UID: "8c1ef2"},
 				},
-				Attributes: map[string]string{
+				Attributes: []map[string]string{{
 					"container": "app", "image": "nginx:latest", "privileged": "true",
-				},
+				}},
 			},
 		},
 		{
@@ -63,7 +63,7 @@ func TestParseFailedResource(t *testing.T) {
 			ok:   true,
 			want: FailedResource{
 				Kind: "Namespace", Name: "dev", UID: "n-2", APIVersion: "v1",
-				Attributes: map[string]string{"enforce": "none"},
+				Attributes: []map[string]string{{"enforce": "none"}},
 			},
 		},
 		{
@@ -72,7 +72,7 @@ func TestParseFailedResource(t *testing.T) {
 			ok:   true,
 			want: FailedResource{
 				Kind: "RoleBinding", Namespace: "ns-a", Name: "edit", UID: "rb1",
-				Attributes: map[string]string{"subject": "system:anonymous"},
+				Attributes: []map[string]string{{"subject": "system:anonymous"}},
 			},
 		},
 		{
@@ -90,7 +90,7 @@ func TestParseFailedResource(t *testing.T) {
 			ok:   true,
 			want: FailedResource{
 				Kind: "Pod", Namespace: "p", Name: "api", UID: "a1",
-				Attributes: map[string]string{"container": "api", "image": "api@sha256:deadbeef"},
+				Attributes: []map[string]string{{"container": "api", "image": "api@sha256:deadbeef"}},
 			},
 		},
 		{
@@ -99,7 +99,7 @@ func TestParseFailedResource(t *testing.T) {
 			ok:   true,
 			want: FailedResource{
 				Kind: "Cluster", Scope: ScopeCluster,
-				Attributes: map[string]string{"rbacMode": "legacy"},
+				Attributes: []map[string]string{{"rbacMode": "legacy"}},
 			},
 		},
 		{
@@ -162,17 +162,46 @@ func TestExecuteCollectsFailedResources(t *testing.T) {
 	if out.actualResult != rows {
 		t.Errorf("actualResult = %q, want the full blob", out.actualResult)
 	}
-	// Same pod, two different containers => two entries. The compliant row is skipped.
-	if len(out.failedResources) != 2 {
-		t.Fatalf("got %d failed resources, want 2: %+v", len(out.failedResources), out.failedResources)
+	// Same pod, two different containers => ONE resource carrying both attribute sets, in
+	// row order. The compliant row is skipped.
+	if len(out.failedResources) != 1 {
+		t.Fatalf("got %d failed resources, want 1: %+v", len(out.failedResources), out.failedResources)
+	}
+	fr := out.failedResources[0]
+	if fr.Name != "web" || fr.UID != "u1" {
+		t.Errorf("identity = %+v, want web/u1", fr)
+	}
+	if len(fr.Attributes) != 2 {
+		t.Fatalf("got %d attribute sets, want 2: %v", len(fr.Attributes), fr.Attributes)
 	}
 	for i, want := range []string{"app", "sidecar"} {
-		if got := out.failedResources[i].Attributes["container"]; got != want {
-			t.Errorf("resource %d container = %q, want %q", i, got, want)
+		if got := fr.Attributes[i]["container"]; got != want {
+			t.Errorf("attribute set %d container = %q, want %q", i, got, want)
 		}
-		if out.failedResources[i].Name != "web" {
-			t.Errorf("resource %d name = %q, want web", i, out.failedResources[i].Name)
-		}
+	}
+}
+
+// The whole point of the merge: one object failing a check several ways is one resource,
+// never several rows sharing a (kind, name, uid).
+func TestExecuteMergesRowsForTheSameObject(t *testing.T) {
+	rows := strings.Join([]string{
+		"kind=ClusterRoleBinding name=rogue-admin uid=crb-1 subject=ci subjectKind=ServiceAccount is_compliant=false",
+		"kind=ClusterRoleBinding name=rogue-admin uid=crb-1 subject=system:anonymous subjectKind=User is_compliant=false",
+		"kind=ClusterRoleBinding name=rogue-admin uid=crb-1 subject=system:unauthenticated subjectKind=Group is_compliant=false",
+	}, "\n")
+
+	item := testItem{
+		Flag: "is_compliant", Set: true,
+		Compare:          compare{Op: "eq", Value: "true"},
+		isMultipleOutput: true,
+	}
+	out := item.execute(rows)
+
+	if len(out.failedResources) != 1 {
+		t.Fatalf("got %d failed resources, want 1: %+v", len(out.failedResources), out.failedResources)
+	}
+	if got := len(out.failedResources[0].Attributes); got != 3 {
+		t.Errorf("got %d attribute sets, want 3: %v", got, out.failedResources[0].Attributes)
 	}
 }
 
@@ -245,7 +274,7 @@ func TestCheckRunPopulatesFailedResourcesJSON(t *testing.T) {
 	if got.Kind != "Pod" || got.Namespace != "default" || got.Name != "web" || got.UID != "u1" {
 		t.Errorf("identity = %+v", got)
 	}
-	if got.Attributes["privileged"] != "true" {
+	if len(got.Attributes) != 1 || got.Attributes[0]["privileged"] != "true" {
 		t.Errorf("attributes = %v, want privileged=true", got.Attributes)
 	}
 
