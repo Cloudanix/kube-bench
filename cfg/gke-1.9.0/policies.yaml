@@ -181,7 +181,10 @@ groups:
           for csr in $(kubectl get csr -o name 2>/dev/null | sed 's|^.*/||'); do
             req=$(kubectl get csr "${csr}" -o jsonpath='{.spec.request}' 2>/dev/null)
             [ -z "${req}" ] && continue
-            if echo "${req}" | base64 -d 2>/dev/null | openssl req -noout -text 2>/dev/null | grep -q 'O = system:masters'; then
+            # `O *= *` matches both spellings: OpenSSL 1.1.x prints "O = system:masters",
+            # 3.x prints "O=system:masters". Matching only the spaced form made this check
+            # silently never fire on a modern image — a false negative, not a false alarm.
+            if echo "${req}" | base64 -d 2>/dev/null | openssl req -noout -text 2>/dev/null | grep -qE 'O *= *system:masters'; then
               kubectl get csr "${csr}" -o json | jq -r '
                 .metadata as $m
                 | "kind=CertificateSigningRequest name=\($m.name) uid=\($m.uid) apiVersion=certificates.k8s.io/v1"
