@@ -30,7 +30,7 @@ fi
 
 main() {
 	# Default values
-	CURRENT_TAG="$(git describe --tags "$(git rev-list --tags --max-count=1)" 2>/dev/null || echo "latest")"
+	CURRENT_TAG="v$(git describe --tags --always --dirty="-dirty" 2>/dev/null)"
 	IMAGE_TAG="$CURRENT_TAG"
 	PLATFORMS="linux/amd64,linux/arm64"
 	PUSH_IMAGES="false"
