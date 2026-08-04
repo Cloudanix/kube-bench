@@ -15,12 +15,14 @@ This script generates Docker images for the misconfig-scanner service with multi
 Options:
   --tag TAG              Image tag (default: latest git tag, or "latest")
   --push                 Push images to registry (default: false)
+  --load                 Load image into local Docker cache (single platform only)
   --latest               Also tag/push "latest" (default: false)
   -h, --help             Show this help message
 
 Examples:
   ./build.sh --tag v1.2.3
   ./build.sh --tag v1.2.3 --push
+  ./build.sh --tag v1.2.3 --load
   ./build.sh --tag v1.2.3 --latest --push
 '
     exit
@@ -33,6 +35,7 @@ main() {
 	PLATFORMS="linux/amd64,linux/arm64"
 	PUSH_IMAGES="false"
 	PUSH_LATEST="false"
+	LOAD_IMAGE="true"
 
 	REGISTRY="cloudanix"
 
@@ -51,6 +54,11 @@ main() {
 				;;
 			--push)
 				PUSH_IMAGES="true"
+				LOAD_IMAGE="false"
+				shift
+				;;
+			--load)
+				LOAD_IMAGE="true"
 				shift
 				;;
 			*)
@@ -69,6 +77,7 @@ main() {
 	echo "  Platforms: $PLATFORMS"
 	echo "  Push to latest: $PUSH_LATEST"
 	echo "  Push images: $PUSH_IMAGES"
+	echo "  Load to local: $LOAD_IMAGE"
 	echo ""
 
 	# Login to Docker registry if credentials are available
@@ -87,7 +96,14 @@ main() {
 	# Build and optionally push the main tag
 	echo "Building $FULL_IMAGE_NAME:$IMAGE_TAG..."
 
-	BUILD_CMD=(docker buildx build --platform "$PLATFORMS" --progress=plain)
+	BUILD_CMD=(docker buildx build)
+	if [[ "$LOAD_IMAGE" == "true" ]]; then
+		# --load only works with a single platform
+		BUILD_CMD+=(--platform "linux/$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/')" --load)
+	else
+		BUILD_CMD+=(--platform "$PLATFORMS")
+	fi
+	BUILD_CMD+=(--progress=plain)
 	if [[ "$PUSH_IMAGES" == "true" ]]; then
 		BUILD_CMD+=(--push)
 	fi
