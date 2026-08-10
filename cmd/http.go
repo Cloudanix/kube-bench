@@ -185,7 +185,7 @@ func writeHttpOutput(controlsCollection []*check.Controls) {
 	fmt.Println("secrets initialized")
 
 	cfg.NodeName = os.Getenv("NODE_NAME")
-	cfg.ServiceVersion = os.Getenv("SVC_VERSION")
+	cfg.ServiceVersion = os.Getenv("SERVICE_VERSION")
 
 	// fmt.Printf("config: %s\n", cfg)
 
