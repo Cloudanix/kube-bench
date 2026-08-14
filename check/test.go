@@ -148,12 +148,23 @@ func parseFailedResource(row string) (FailedResource, bool) {
 	if len(attrs) > 0 {
 		fr.Attributes = []map[string]string{attrs}
 	}
+	fr.setParentFromOwners()
 	// A workload or node row is useless without a name. A cluster row is not: which cluster
 	// this is already travels on the POST, so the row only has to declare its scope.
 	if fr.Scope == ScopeCluster {
 		return fr, fr.Kind != ""
 	}
 	return fr, fr.Kind != "" && fr.Name != ""
+}
+
+// setParentFromOwners points Parent at the last Owners entry, matching inventory's
+// "parent is the root of the chain". A single owner= token makes that the immediate
+// controller; a later walk replaces both fields with the full chain.
+func (fr *FailedResource) setParentFromOwners() {
+	if n := len(fr.Owners); n > 0 {
+		last := fr.Owners[n-1]
+		fr.Parent = &last
+	}
 }
 
 // parseLabels decodes k:v,k:v. ':' and ',' are invalid in k8s label keys and values, so

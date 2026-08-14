@@ -52,6 +52,7 @@ func TestParseFailedResource(t *testing.T) {
 				Owners: []ParentResource{
 					{Kind: "ReplicaSet", Namespace: "default", Name: "web-7d9f8b6c4", UID: "8c1ef2"},
 				},
+				Parent: &ParentResource{Kind: "ReplicaSet", Namespace: "default", Name: "web-7d9f8b6c4", UID: "8c1ef2"},
 				Attributes: []map[string]string{{
 					"container": "app", "image": "nginx:latest", "privileged": "true",
 				}},
@@ -82,6 +83,21 @@ func TestParseFailedResource(t *testing.T) {
 			want: FailedResource{
 				Kind: "Pod", Namespace: "x", Name: "y", UID: "z",
 				Owners: []ParentResource{{Kind: "Deployment", Name: "web", UID: "uid9"}},
+				Parent: &ParentResource{Kind: "Deployment", Name: "web", UID: "uid9"},
+			},
+		},
+		{
+			name: "repeated owner tokens keep the last as parent",
+			row: "kind=Pod ns=x name=y uid=z " +
+				"owner=ReplicaSet/x/web-rs/uid-rs owner=Deployment/x/web/uid-dep is_compliant=false",
+			ok: true,
+			want: FailedResource{
+				Kind: "Pod", Namespace: "x", Name: "y", UID: "z",
+				Owners: []ParentResource{
+					{Kind: "ReplicaSet", Namespace: "x", Name: "web-rs", UID: "uid-rs"},
+					{Kind: "Deployment", Namespace: "x", Name: "web", UID: "uid-dep"},
+				},
+				Parent: &ParentResource{Kind: "Deployment", Namespace: "x", Name: "web", UID: "uid-dep"},
 			},
 		},
 		{
@@ -259,7 +275,7 @@ func TestExecuteSingleOutputUnchanged(t *testing.T) {
 func TestCheckRunPopulatesFailedResourcesJSON(t *testing.T) {
 	c := &Check{
 		ID: "C1.1", Scored: true, IsMultiple: true,
-		Audit: "echo 'kind=Pod ns=default name=web uid=u1 container=app privileged=true is_compliant=false'\n" +
+		Audit: "echo 'kind=Pod ns=default name=web uid=u1 owner=ReplicaSet/default/web-rs/u-rs container=app privileged=true is_compliant=false'\n" +
 			"echo 'kind=Pod ns=payments name=api uid=u2 container=api is_compliant=true'",
 		Tests: compliantItem(),
 	}
@@ -274,6 +290,9 @@ func TestCheckRunPopulatesFailedResourcesJSON(t *testing.T) {
 	if got.Kind != "Pod" || got.Namespace != "default" || got.Name != "web" || got.UID != "u1" {
 		t.Errorf("identity = %+v", got)
 	}
+	if got.Parent == nil || got.Parent.Kind != "ReplicaSet" || got.Parent.Name != "web-rs" {
+		t.Errorf("parent = %+v, want ReplicaSet/web-rs", got.Parent)
+	}
 	if len(got.Attributes) != 1 || got.Attributes[0]["privileged"] != "true" {
 		t.Errorf("attributes = %v, want privileged=true", got.Attributes)
 	}
@@ -284,6 +303,9 @@ func TestCheckRunPopulatesFailedResourcesJSON(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `"failed_resources"`) {
 		t.Errorf("marshaled check is missing failed_resources: %s", b)
+	}
+	if !strings.Contains(string(b), `"parent"`) {
+		t.Errorf("marshaled check is missing parent: %s", b)
 	}
 }
 
@@ -325,3 +347,4 @@ func TestEmptyAuditPassSentinel(t *testing.T) {
 		t.Errorf("got %+v, want none", c.FailedResources)
 	}
 }
+

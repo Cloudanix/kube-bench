@@ -141,6 +141,11 @@ type FailedResource struct {
 	Node              string            `json:"node,omitempty"`
 	Labels            map[string]string `json:"labels,omitempty"`
 	Owners            []ParentResource  `json:"owners,omitempty"`
+	// Parent is the root of Owners — the same field inventory-collector emits so the
+	// console can attach the finding to a Deployment rather than the cluster. When the
+	// audit only named the immediate controller, Parent equals Owners[0] until the
+	// owner-chain walk fills in the rest.
+	Parent *ParentResource `json:"parent,omitempty"`
 	// Attributes carries one map per audit row that named this object. A single object can
 	// fail a check several ways at once — a ClusterRoleBinding with four bad subjects, a Pod
 	// with two privileged containers — and each of those rows keeps its own attribute set
