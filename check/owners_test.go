@@ -176,3 +176,111 @@ func TestOwnerLookupFromListJSONRejectsGarbage(t *testing.T) {
 		t.Fatal("want error")
 	}
 }
+
+type stubRunner struct {
+	resources []FailedResource
+}
+
+func (s stubRunner) Run(c *Check) State {
+	out := make([]FailedResource, len(s.resources))
+	copy(out, s.resources)
+	for i := range out {
+		out[i].Owners = append([]ParentResource(nil), out[i].Owners...)
+		if out[i].Parent != nil {
+			p := *out[i].Parent
+			out[i].Parent = &p
+		}
+	}
+	c.FailedResources = out
+	c.State = FAIL
+	return FAIL
+}
+
+func policiesControls(t *testing.T, nChecks int) *Controls {
+	t.Helper()
+	in := []byte(`
+---
+type: "policies"
+groups:
+- id: "1"
+  checks:
+`)
+	for i := 0; i < nChecks; i++ {
+		in = append(in, []byte("  - id: C1."+string(rune('1'+i))+"\n    scored: true\n")...)
+	}
+	c, err := NewControls(POLICIES, in, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func TestRunChecksResolvesParentFromLookup(t *testing.T) {
+	rs := ParentResource{Kind: "ReplicaSet", Namespace: "ns", Name: "web-rs", UID: "uid-rs"}
+	dep := ParentResource{Kind: "Deployment", Namespace: "ns", Name: "web", UID: "uid-dep"}
+	orig := fetchOwnerLookup
+	t.Cleanup(func() { fetchOwnerLookup = orig })
+	fetchOwnerLookup = func() ownerLookup {
+		return ownerLookup{ownerKey(rs): dep}
+	}
+
+	controls := policiesControls(t, 1)
+	runner := stubRunner{resources: []FailedResource{{
+		Kind: "Pod", Namespace: "ns", Name: "web-pod", UID: "uid-pod",
+		Scope: ScopeWorkload, Owners: []ParentResource{rs}, Parent: &rs,
+	}}}
+	runAll := func(*Group, *Check) bool { return true }
+	controls.RunChecks(runner, runAll, map[string]bool{})
+
+	got := controls.Groups[0].Checks[0].FailedResources
+	if len(got) != 1 {
+		t.Fatalf("failed_resources = %+v", got)
+	}
+	if got[0].Parent == nil || !reflect.DeepEqual(*got[0].Parent, dep) {
+		t.Errorf("parent = %+v, want Deployment web", got[0].Parent)
+	}
+	wantOwners := []ParentResource{rs, dep}
+	if !reflect.DeepEqual(got[0].Owners, wantOwners) {
+		t.Errorf("owners = %+v, want %+v", got[0].Owners, wantOwners)
+	}
+}
+
+func TestRunChecksDoesNotFetchLookupWithoutOwners(t *testing.T) {
+	orig := fetchOwnerLookup
+	t.Cleanup(func() { fetchOwnerLookup = orig })
+	called := false
+	fetchOwnerLookup = func() ownerLookup {
+		called = true
+		return nil
+	}
+
+	controls := policiesControls(t, 1)
+	runner := stubRunner{resources: []FailedResource{{
+		Kind: "Pod", Namespace: "ns", Name: "naked", UID: "u", Scope: ScopeWorkload,
+	}}}
+	controls.RunChecks(runner, func(*Group, *Check) bool { return true }, map[string]bool{})
+	if called {
+		t.Fatal("fetched owner lookup for a resource with no owners")
+	}
+}
+
+func TestRunChecksFetchesOwnerLookupOnce(t *testing.T) {
+	rs := ParentResource{Kind: "ReplicaSet", Namespace: "ns", Name: "web-rs", UID: "uid-rs"}
+	orig := fetchOwnerLookup
+	t.Cleanup(func() { fetchOwnerLookup = orig })
+	calls := 0
+	fetchOwnerLookup = func() ownerLookup {
+		calls++
+		return ownerLookup{}
+	}
+
+	controls := policiesControls(t, 2)
+	runner := stubRunner{resources: []FailedResource{{
+		Kind: "Pod", Owners: []ParentResource{rs}, Parent: &rs, Scope: ScopeWorkload,
+		Name: "p", UID: "u",
+	}}}
+	controls.RunChecks(runner, func(*Group, *Check) bool { return true }, map[string]bool{})
+	if calls != 1 {
+		t.Fatalf("fetchOwnerLookup calls = %d, want 1", calls)
+	}
+}

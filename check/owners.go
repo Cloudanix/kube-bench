@@ -14,7 +14,12 @@
 
 package check
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"os/exec"
+
+	"github.com/golang/glog"
+)
 
 // ownerChainLimit matches inventory-collector's walk bound against cyclic refs.
 const ownerChainLimit = 16
@@ -119,4 +124,38 @@ func ownerLookupFromListJSON(data []byte) (ownerLookup, error) {
 		}
 	}
 	return lookup, nil
+}
+
+// fetchOwnerLookup loads controller ownerReferences once per RunChecks.
+// Tests replace it; production talks to kubectl. A failure returns nil so
+// Parent stays the immediate controller the audit already named.
+var fetchOwnerLookup = loadOwnerLookup
+
+func loadOwnerLookup() ownerLookup {
+	if _, err := exec.LookPath("kubectl"); err != nil {
+		return nil
+	}
+	cmd := exec.Command("kubectl", "get",
+		"replicasets,deployments,daemonsets,statefulsets,jobs,cronjobs",
+		"--all-namespaces", "-o", "json")
+	out, err := cmd.Output()
+	if err != nil {
+		glog.V(2).Infof("owner lookup skipped: %v", err)
+		return nil
+	}
+	lookup, err := ownerLookupFromListJSON(out)
+	if err != nil {
+		glog.V(2).Infof("owner lookup parse: %v", err)
+		return nil
+	}
+	return lookup
+}
+
+func failedResourceHasOwners(frs []FailedResource) bool {
+	for i := range frs {
+		if len(frs[i].Owners) > 0 {
+			return true
+		}
+	}
+	return false
 }

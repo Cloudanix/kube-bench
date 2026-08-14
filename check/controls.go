@@ -103,6 +103,16 @@ func (controls *Controls) RunChecks(runner Runner, filter Predicate, skipIDMap m
 	controls.Summary.Pass, controls.Summary.Fail, controls.Summary.Warn, controls.Info = 0, 0, 0, 0
 	nodeName := hostIdentity()
 
+	var lookup ownerLookup
+	var lookupLoaded bool
+	getLookup := func() ownerLookup {
+		if !lookupLoaded {
+			lookup = fetchOwnerLookup()
+			lookupLoaded = true
+		}
+		return lookup
+	}
+
 	for _, group := range controls.Groups {
 		for _, check := range group.Checks {
 
@@ -118,6 +128,9 @@ func (controls *Controls) RunChecks(runner Runner, filter Predicate, skipIDMap m
 			}
 
 			state := runner.Run(check)
+			if failedResourceHasOwners(check.FailedResources) {
+				check.resolveFailedResourceOwners(getLookup())
+			}
 			check.addNodeResource(controls.Type, nodeName)
 
 			check.TestInfo = append(check.TestInfo, check.Remediation)
