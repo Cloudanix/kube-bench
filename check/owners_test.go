@@ -218,10 +218,10 @@ groups:
 func TestRunChecksResolvesParentFromLookup(t *testing.T) {
 	rs := ParentResource{Kind: "ReplicaSet", Namespace: "ns", Name: "web-rs", UID: "uid-rs"}
 	dep := ParentResource{Kind: "Deployment", Namespace: "ns", Name: "web", UID: "uid-dep"}
-	orig := fetchOwnerLookup
-	t.Cleanup(func() { fetchOwnerLookup = orig })
-	fetchOwnerLookup = func() ownerLookup {
-		return ownerLookup{ownerKey(rs): dep}
+	orig := fetchObjectStore
+	t.Cleanup(func() { fetchObjectStore = orig })
+	fetchObjectStore = func() *objectStore {
+		return &objectStore{lookup: ownerLookup{ownerKey(rs): dep}}
 	}
 
 	controls := policiesControls(t, 1)
@@ -245,33 +245,31 @@ func TestRunChecksResolvesParentFromLookup(t *testing.T) {
 	}
 }
 
-func TestRunChecksDoesNotFetchLookupWithoutOwners(t *testing.T) {
-	orig := fetchOwnerLookup
-	t.Cleanup(func() { fetchOwnerLookup = orig })
+func TestRunChecksDoesNotFetchStoreWithoutResources(t *testing.T) {
+	orig := fetchObjectStore
+	t.Cleanup(func() { fetchObjectStore = orig })
 	called := false
-	fetchOwnerLookup = func() ownerLookup {
+	fetchObjectStore = func() *objectStore {
 		called = true
 		return nil
 	}
 
 	controls := policiesControls(t, 1)
-	runner := stubRunner{resources: []FailedResource{{
-		Kind: "Pod", Namespace: "ns", Name: "naked", UID: "u", Scope: ScopeWorkload,
-	}}}
+	runner := stubRunner{}
 	controls.RunChecks(runner, func(*Group, *Check) bool { return true }, map[string]bool{})
 	if called {
-		t.Fatal("fetched owner lookup for a resource with no owners")
+		t.Fatal("fetched inventory snapshot for a check with no failed resources")
 	}
 }
 
 func TestRunChecksFetchesOwnerLookupOnce(t *testing.T) {
 	rs := ParentResource{Kind: "ReplicaSet", Namespace: "ns", Name: "web-rs", UID: "uid-rs"}
-	orig := fetchOwnerLookup
-	t.Cleanup(func() { fetchOwnerLookup = orig })
+	orig := fetchObjectStore
+	t.Cleanup(func() { fetchObjectStore = orig })
 	calls := 0
-	fetchOwnerLookup = func() ownerLookup {
+	fetchObjectStore = func() *objectStore {
 		calls++
-		return ownerLookup{}
+		return &objectStore{lookup: ownerLookup{}}
 	}
 
 	controls := policiesControls(t, 2)
@@ -281,6 +279,6 @@ func TestRunChecksFetchesOwnerLookupOnce(t *testing.T) {
 	}}}
 	controls.RunChecks(runner, func(*Group, *Check) bool { return true }, map[string]bool{})
 	if calls != 1 {
-		t.Fatalf("fetchOwnerLookup calls = %d, want 1", calls)
+		t.Fatalf("fetchObjectStore calls = %d, want 1", calls)
 	}
 }

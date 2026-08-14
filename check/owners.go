@@ -16,9 +16,11 @@ package check
 
 import (
 	"encoding/json"
+	"os"
 	"os/exec"
 
 	"github.com/golang/glog"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // ownerChainLimit matches inventory-collector's walk bound against cyclic refs.
@@ -77,85 +79,103 @@ func (c *Check) resolveFailedResourceOwners(lookup ownerLookup) {
 	}
 }
 
-// k8sList is the kubectl -o json List shape used to build an ownerLookup
+// k8sList is the kubectl -o json List shape used to build an objectStore
 // without putting the dump on jq's argv (E2BIG).
 type k8sList struct {
-	Items []k8sListItem `json:"items"`
+	Items []map[string]interface{} `json:"items"`
 }
 
-type k8sListItem struct {
-	Kind     string `json:"kind"`
-	Metadata struct {
-		Name            string              `json:"name"`
-		Namespace       string              `json:"namespace"`
-		OwnerReferences []k8sOwnerReference `json:"ownerReferences"`
-	} `json:"metadata"`
+// objectStore is one kubectl snapshot: every object plus an owner lookup built
+// from their ownerReferences. Failed resources are filled from here so the
+// backend can create a provisional inventory row before the collector runs.
+type objectStore struct {
+	lookup      ownerLookup
+	objs        map[string]*unstructured.Unstructured
+	clusterName string
+	clusterUID  string
 }
 
-type k8sOwnerReference struct {
-	Kind string `json:"kind"`
-	Name string `json:"name"`
-	UID  string `json:"uid"`
+func (s *objectStore) get(kind, ns, name string) *unstructured.Unstructured {
+	if s == nil || s.objs == nil {
+		return nil
+	}
+	return s.objs[ownerKey(ParentResource{Kind: kind, Namespace: ns, Name: name})]
 }
 
-func ownerLookupFromListJSON(data []byte) (ownerLookup, error) {
+func objectStoreFromListJSON(data []byte) (*objectStore, error) {
 	var list k8sList
 	if err := json.Unmarshal(data, &list); err != nil {
 		return nil, err
 	}
-	lookup := ownerLookup{}
-	for _, item := range list.Items {
-		if item.Kind == "" || item.Metadata.Name == "" || len(item.Metadata.OwnerReferences) == 0 {
+	store := &objectStore{
+		lookup:      ownerLookup{},
+		objs:        map[string]*unstructured.Unstructured{},
+		clusterName: inventoryClusterName(),
+	}
+	for _, raw := range list.Items {
+		o := &unstructured.Unstructured{Object: raw}
+		kind, ns, name := o.GetKind(), o.GetNamespace(), o.GetName()
+		if kind == "" || name == "" {
 			continue
 		}
-		ref := item.Metadata.OwnerReferences[0]
+		key := ownerKey(ParentResource{Kind: kind, Namespace: ns, Name: name})
+		store.objs[key] = o
+		if kind == "Namespace" && name == "kube-system" {
+			store.clusterUID = string(o.GetUID())
+		}
+		refs := o.GetOwnerReferences()
+		if len(refs) == 0 {
+			continue
+		}
+		ref := refs[0]
 		if ref.Kind == "" || ref.Name == "" {
 			continue
 		}
-		lookup[ownerKey(ParentResource{
-			Kind:      item.Kind,
-			Namespace: item.Metadata.Namespace,
-			Name:      item.Metadata.Name,
-		})] = ParentResource{
-			Kind:      ref.Kind,
-			Namespace: item.Metadata.Namespace,
-			Name:      ref.Name,
-			UID:       ref.UID,
+		store.lookup[key] = ParentResource{
+			Kind: ref.Kind, Namespace: ns, Name: ref.Name,
+			UID: string(ref.UID), APIVersion: ref.APIVersion,
 		}
 	}
-	return lookup, nil
+	return store, nil
 }
 
-// fetchOwnerLookup loads controller ownerReferences once per RunChecks.
-// Tests replace it; production talks to kubectl. A failure returns nil so
-// Parent stays the immediate controller the audit already named.
-var fetchOwnerLookup = loadOwnerLookup
+func ownerLookupFromListJSON(data []byte) (ownerLookup, error) {
+	store, err := objectStoreFromListJSON(data)
+	if err != nil {
+		return nil, err
+	}
+	return store.lookup, nil
+}
 
-func loadOwnerLookup() ownerLookup {
+// inventorySnapshotResources is the one kubectl get that feeds both the owner
+// walk and the inventory-shaped filler. Includes controllers plus every kind
+// CBP failed_resources can name.
+const inventorySnapshotResources = "pods,replicasets,deployments,daemonsets,statefulsets,jobs,cronjobs,namespaces,nodes,roles,rolebindings,clusterroles,clusterrolebindings,serviceaccounts,networkpolicies,services"
+
+// fetchObjectStore loads the snapshot once per RunChecks. Tests replace it.
+var fetchObjectStore = loadObjectStore
+
+func loadObjectStore() *objectStore {
 	if _, err := exec.LookPath("kubectl"); err != nil {
 		return nil
 	}
-	cmd := exec.Command("kubectl", "get",
-		"replicasets,deployments,daemonsets,statefulsets,jobs,cronjobs",
-		"--all-namespaces", "-o", "json")
+	cmd := exec.Command("kubectl", "get", inventorySnapshotResources, "--all-namespaces", "-o", "json")
 	out, err := cmd.Output()
 	if err != nil {
-		glog.V(2).Infof("owner lookup skipped: %v", err)
+		glog.V(2).Infof("inventory snapshot skipped: %v", err)
 		return nil
 	}
-	lookup, err := ownerLookupFromListJSON(out)
+	store, err := objectStoreFromListJSON(out)
 	if err != nil {
-		glog.V(2).Infof("owner lookup parse: %v", err)
+		glog.V(2).Infof("inventory snapshot parse: %v", err)
 		return nil
 	}
-	return lookup
+	return store
 }
 
-func failedResourceHasOwners(frs []FailedResource) bool {
-	for i := range frs {
-		if len(frs[i].Owners) > 0 {
-			return true
-		}
+func inventoryClusterName() string {
+	if n, err := getConfig("CLUSTER_NAME"); err == nil && n != "" {
+		return n
 	}
-	return false
+	return os.Getenv("CLUSTER_NAME")
 }

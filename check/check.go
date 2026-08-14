@@ -21,6 +21,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/golang/glog"
 )
@@ -132,20 +133,74 @@ type FailedResource struct {
 	Kind string `json:"kind"`
 	// Scope distinguishes a Kubernetes object from the node or the cluster. Always set, so
 	// downstream can branch on it without inferring from Kind.
-	Scope             ResourceScope     `json:"scope"`
-	Namespace         string            `json:"namespace,omitempty"`
-	Name              string            `json:"name"`
-	UID               string            `json:"uid,omitempty"`
-	APIVersion        string            `json:"apiVersion,omitempty"`
-	CreationTimestamp string            `json:"creationTimestamp,omitempty"`
-	Node              string            `json:"node,omitempty"`
-	Labels            map[string]string `json:"labels,omitempty"`
-	Owners            []ParentResource  `json:"owners,omitempty"`
+	Scope ResourceScope `json:"scope"`
+
+	// Identity — same keys as inventory-collector/objects.Resource so the backend can
+	// create a provisional inventory row when the collector has not run yet.
+	Name               string `json:"name"`
+	ClusterName        string `json:"clusterName,omitempty"`
+	ClusterUID         string `json:"clusterUid,omitempty"`
+	Namespace          string `json:"namespace,omitempty"`
+	Node               string `json:"node,omitempty"`
+	UID                string `json:"uid,omitempty"`
+	APIVersion         string `json:"apiVersion,omitempty"`
+	GenerateName       string `json:"generateName,omitempty"`
+	ResourceVersion    string `json:"resourceVersion,omitempty"`
+	Generation         int64  `json:"generation,omitempty"`
+	ObservedGeneration int64  `json:"observedGeneration,omitempty"`
+	// CreationTimestamp stays a string: audit rows emit RFC3339 and inventory's
+	// time.Time marshals to the same wire form.
+	CreationTimestamp string     `json:"creationTimestamp,omitempty"`
+	DeletionTimestamp *time.Time `json:"deletionTimestamp,omitempty"`
+
+	Labels      map[string]string `json:"labels,omitempty"`
+	Annotations map[string]string `json:"annotations,omitempty"`
+	Group       string            `json:"group,omitempty"`
+	Version     string            `json:"version,omitempty"`
+
+	Hostname      string `json:"hostname,omitempty"`
+	Subdomain     string `json:"subdomain,omitempty"`
+	SchedulerName string `json:"schedulerName,omitempty"`
+	OS            string `json:"os,omitempty"`
+
+	PodIP  string   `json:"podIP,omitempty"`
+	PodIPs []string `json:"podIPs,omitempty"`
+	HostIP string   `json:"hostIP,omitempty"`
+
+	Phase      string      `json:"phase,omitempty"`
+	QOSClass   string      `json:"qosClass,omitempty"`
+	StartTime  *time.Time  `json:"startTime,omitempty"`
+	Conditions []Condition `json:"conditions,omitempty"`
+
+	HostPID                      bool                `json:"hostPID,omitempty"`
+	HostIPC                      bool                `json:"hostIPC,omitempty"`
+	HostNetwork                  bool                `json:"hostNetwork,omitempty"`
+	ServiceAccountName           string              `json:"serviceAccountName,omitempty"`
+	AutomountServiceAccountToken *bool               `json:"automountServiceAccountToken,omitempty"`
+	SecurityContext              *PodSecurityContext `json:"securityContext,omitempty"`
+	HostPathVolumes              []HostPathVolume    `json:"hostPathVolumes,omitempty"`
+
+	ConfigMapRefs     []string          `json:"configMapRefs,omitempty"`
+	SecretRefs        []string          `json:"secretRefs,omitempty"`
+	PVCRefs           []string          `json:"pvcRefs,omitempty"`
+	NodeSelector      map[string]string `json:"nodeSelector,omitempty"`
+	Tolerations       []Toleration      `json:"tolerations,omitempty"`
+	PriorityClassName string            `json:"priorityClassName,omitempty"`
+
+	Owners []ParentResource `json:"owners,omitempty"`
 	// Parent is the root of Owners — the same field inventory-collector emits so the
 	// console can attach the finding to a Deployment rather than the cluster. When the
 	// audit only named the immediate controller, Parent equals Owners[0] until the
 	// owner-chain walk fills in the rest.
 	Parent *ParentResource `json:"parent,omitempty"`
+
+	NodeDetail *NodeDetail          `json:"nodeDetail,omitempty"`
+	Service    *ServiceDetail       `json:"service,omitempty"`
+	Endpoints  *EndpointSliceDetail `json:"endpoints,omitempty"`
+	Event      string               `json:"event,omitempty"`
+	EventTime  int64                `json:"eventTime,omitempty"`
+	Containers []Container          `json:"containers,omitempty"`
+
 	// Attributes carries one map per audit row that named this object. A single object can
 	// fail a check several ways at once — a ClusterRoleBinding with four bad subjects, a Pod
 	// with two privileged containers — and each of those rows keeps its own attribute set
@@ -153,12 +208,15 @@ type FailedResource struct {
 	Attributes []map[string]string `json:"attributes,omitempty"`
 }
 
-// ParentResource is a controller ownerReference. Subset of inventory's ParentResource.
+// ParentResource is a controller ownerReference. JSON tags match inventory's ParentResource.
 type ParentResource struct {
-	Kind      string `json:"kind"`
-	Namespace string `json:"namespace,omitempty"`
-	Name      string `json:"name"`
-	UID       string `json:"uid,omitempty"`
+	Name        string `json:"name"`
+	Kind        string `json:"kind"`
+	ClusterName string `json:"clusterName,omitempty"`
+	Namespace   string `json:"namespace,omitempty"`
+	Node        string `json:"node,omitempty"`
+	APIVersion  string `json:"apiVersion,omitempty"`
+	UID         string `json:"uid,omitempty"`
 }
 
 // key identifies a FailedResource by identity alone. Attributes are deliberately excluded:

@@ -347,4 +347,3 @@ func TestEmptyAuditPassSentinel(t *testing.T) {
 		t.Errorf("got %+v, want none", c.FailedResources)
 	}
 }
-
