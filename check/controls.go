@@ -103,16 +103,6 @@ func (controls *Controls) RunChecks(runner Runner, filter Predicate, skipIDMap m
 	controls.Summary.Pass, controls.Summary.Fail, controls.Summary.Warn, controls.Info = 0, 0, 0, 0
 	nodeName := hostIdentity()
 
-	var store *objectStore
-	var storeLoaded bool
-	getStore := func() *objectStore {
-		if !storeLoaded {
-			store = fetchObjectStore()
-			storeLoaded = true
-		}
-		return store
-	}
-
 	for _, group := range controls.Groups {
 		for _, check := range group.Checks {
 
@@ -130,7 +120,7 @@ func (controls *Controls) RunChecks(runner Runner, filter Predicate, skipIDMap m
 			state := runner.Run(check)
 			check.addNodeResource(controls.Type, nodeName)
 			if len(check.FailedResources) > 0 {
-				check.fillInventory(getStore())
+				check.fillInventory(getObjectStore())
 			}
 
 			check.TestInfo = append(check.TestInfo, check.Remediation)

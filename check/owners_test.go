@@ -219,7 +219,8 @@ func TestRunChecksResolvesParentFromLookup(t *testing.T) {
 	rs := ParentResource{Kind: "ReplicaSet", Namespace: "ns", Name: "web-rs", UID: "uid-rs"}
 	dep := ParentResource{Kind: "Deployment", Namespace: "ns", Name: "web", UID: "uid-dep"}
 	orig := fetchObjectStore
-	t.Cleanup(func() { fetchObjectStore = orig })
+	resetObjectStoreCache()
+	t.Cleanup(func() { fetchObjectStore = orig; resetObjectStoreCache() })
 	fetchObjectStore = func() *objectStore {
 		return &objectStore{lookup: ownerLookup{ownerKey(rs): dep}}
 	}
@@ -247,7 +248,8 @@ func TestRunChecksResolvesParentFromLookup(t *testing.T) {
 
 func TestRunChecksDoesNotFetchStoreWithoutResources(t *testing.T) {
 	orig := fetchObjectStore
-	t.Cleanup(func() { fetchObjectStore = orig })
+	resetObjectStoreCache()
+	t.Cleanup(func() { fetchObjectStore = orig; resetObjectStoreCache() })
 	called := false
 	fetchObjectStore = func() *objectStore {
 		called = true
@@ -265,7 +267,8 @@ func TestRunChecksDoesNotFetchStoreWithoutResources(t *testing.T) {
 func TestRunChecksFetchesOwnerLookupOnce(t *testing.T) {
 	rs := ParentResource{Kind: "ReplicaSet", Namespace: "ns", Name: "web-rs", UID: "uid-rs"}
 	orig := fetchObjectStore
-	t.Cleanup(func() { fetchObjectStore = orig })
+	resetObjectStoreCache()
+	t.Cleanup(func() { fetchObjectStore = orig; resetObjectStoreCache() })
 	calls := 0
 	fetchObjectStore = func() *objectStore {
 		calls++
@@ -280,5 +283,36 @@ func TestRunChecksFetchesOwnerLookupOnce(t *testing.T) {
 	controls.RunChecks(runner, func(*Group, *Check) bool { return true }, map[string]bool{})
 	if calls != 1 {
 		t.Fatalf("fetchObjectStore calls = %d, want 1", calls)
+	}
+}
+
+// TestObjectStoreCachedAcrossRunChecks is the actual perf fix: a single
+// `kube-bench run` calls RunChecks once per target (node, policies, CBP...).
+// Each of those used to pay for its own full-cluster kubectl snapshot; now the
+// snapshot is fetched once per process and shared.
+func TestObjectStoreCachedAcrossRunChecks(t *testing.T) {
+	rs := ParentResource{Kind: "ReplicaSet", Namespace: "ns", Name: "web-rs", UID: "uid-rs"}
+	orig := fetchObjectStore
+	resetObjectStoreCache()
+	t.Cleanup(func() { fetchObjectStore = orig; resetObjectStoreCache() })
+	calls := 0
+	fetchObjectStore = func() *objectStore {
+		calls++
+		return &objectStore{lookup: ownerLookup{}}
+	}
+
+	runner := stubRunner{resources: []FailedResource{{
+		Kind: "Pod", Owners: []ParentResource{rs}, Parent: &rs, Scope: ScopeWorkload,
+		Name: "p", UID: "u",
+	}}}
+	runAll := func(*Group, *Check) bool { return true }
+
+	// Simulate two targets from the same kube-bench run (e.g. node + cloudanix-1.0),
+	// each with its own Controls/RunChecks call.
+	policiesControls(t, 1).RunChecks(runner, runAll, map[string]bool{})
+	policiesControls(t, 1).RunChecks(runner, runAll, map[string]bool{})
+
+	if calls != 1 {
+		t.Fatalf("fetchObjectStore calls across two RunChecks = %d, want 1", calls)
 	}
 }

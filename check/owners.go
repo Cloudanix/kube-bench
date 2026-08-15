@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"sync"
 
 	"github.com/golang/glog"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -152,8 +153,32 @@ func ownerLookupFromListJSON(data []byte) (ownerLookup, error) {
 // CBP failed_resources can name.
 const inventorySnapshotResources = "pods,replicasets,deployments,daemonsets,statefulsets,jobs,cronjobs,namespaces,nodes,roles,rolebindings,clusterroles,clusterrolebindings,serviceaccounts,networkpolicies,services"
 
-// fetchObjectStore loads the snapshot once per RunChecks. Tests replace it.
+// fetchObjectStore loads the kubectl snapshot. Tests replace it.
 var fetchObjectStore = loadObjectStore
+
+var (
+	objectStoreOnce   sync.Once
+	cachedObjectStore *objectStore
+)
+
+// getObjectStore returns the process-wide kubectl snapshot, fetching it at most
+// once per process no matter how many RunChecks calls need it. A single
+// `kube-bench run` invokes RunChecks once per target (node, policies, CBP...);
+// without this, every target with failures paid for its own full
+// --all-namespaces kubectl listing.
+func getObjectStore() *objectStore {
+	objectStoreOnce.Do(func() {
+		cachedObjectStore = fetchObjectStore()
+	})
+	return cachedObjectStore
+}
+
+// resetObjectStoreCache clears the memoized snapshot so the next getObjectStore
+// call re-fetches. Tests use this to get per-test isolation.
+func resetObjectStoreCache() {
+	objectStoreOnce = sync.Once{}
+	cachedObjectStore = nil
+}
 
 func loadObjectStore() *objectStore {
 	if _, err := exec.LookPath("kubectl"); err != nil {
