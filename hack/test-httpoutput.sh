@@ -10,7 +10,7 @@
 # cmd/http.go reads three FIXED paths (not flag-overridable):
 #   /etc/cdx/config/config.yaml      <- listenerUrl + account/cluster fields
 #   /etc/cdx/secrets/auth-token      <- bearer token
-#   env NODE_NAME, env SVC_VERSION   <- node name + service version headers
+#   env NODE_NAME, env SERVICE_VERSION <- node name + service version headers
 # so this script needs sudo to populate /etc/cdx.
 #
 # Usage:
@@ -79,7 +79,7 @@ LISTENER_PID=$!
 sleep 1
 
 echo "==> running kube-bench with --httpoutput=true"
-export NODE_NAME="test-node" SVC_VERSION="0.15.6-cdx"
+export NODE_NAME="test-node" SERVICE_VERSION="0.15.6-cdx"
 "$TMP_BIN" run --targets "$TARGETS" --benchmark "$BENCHMARK" --httpoutput=true || true
 
 sleep 1
