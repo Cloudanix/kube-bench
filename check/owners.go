@@ -15,14 +15,20 @@
 package check
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"sync"
+	"time"
 
 	"github.com/golang/glog"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
+
+// objectStoreFetchTimeout bounds the single kubectl snapshot call. Without it, an
+// unresponsive API server hangs RunChecks (and the whole kube-bench run) forever.
+const objectStoreFetchTimeout = 30 * time.Second
 
 // ownerChainLimit matches inventory-collector's walk bound against cyclic refs.
 const ownerChainLimit = 16
@@ -184,16 +190,27 @@ func loadObjectStore() *objectStore {
 	if _, err := exec.LookPath("kubectl"); err != nil {
 		return nil
 	}
-	cmd := exec.Command("kubectl", "get", inventorySnapshotResources, "--all-namespaces", "-o", "json")
+	ctx, cancel := context.WithTimeout(context.Background(), objectStoreFetchTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "kubectl", "get", inventorySnapshotResources, "--all-namespaces", "-o", "json")
 	out, err := cmd.Output()
-	if err != nil {
-		glog.V(2).Infof("inventory snapshot skipped: %v", err)
+	// kubectl still writes a valid combined List for every kind it *could* read even when
+	// one requested kind is Forbidden (missing RBAC) — it just exits non-zero. Parse `out`
+	// regardless of err so one missing kind doesn't blank the whole snapshot; only bail when
+	// there's nothing usable to parse.
+	if len(out) == 0 {
+		if err != nil {
+			glog.V(2).Infof("inventory snapshot skipped: %v", err)
+		}
 		return nil
 	}
-	store, err := objectStoreFromListJSON(out)
-	if err != nil {
-		glog.V(2).Infof("inventory snapshot parse: %v", err)
+	store, parseErr := objectStoreFromListJSON(out)
+	if parseErr != nil {
+		glog.V(2).Infof("inventory snapshot parse: %v (kubectl err: %v)", parseErr, err)
 		return nil
+	}
+	if err != nil {
+		glog.V(2).Infof("inventory snapshot partial (some kinds unreadable): %v", err)
 	}
 	return store
 }
