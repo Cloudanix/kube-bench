@@ -15,9 +15,44 @@
 package check
 
 import (
+	"errors"
 	"reflect"
 	"testing"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
+
+// unstructuredObj builds a minimal unstructured object of the given kind,
+// with an optional single owner reference, for objectStore.objs fixtures.
+func unstructuredObj(kind, ns, name, uid string, owner *ParentResource) *unstructured.Unstructured {
+	meta := map[string]interface{}{"name": name}
+	if ns != "" {
+		meta["namespace"] = ns
+	}
+	if uid != "" {
+		meta["uid"] = uid
+	}
+	if owner != nil {
+		meta["ownerReferences"] = []interface{}{
+			map[string]interface{}{
+				"kind":       owner.Kind,
+				"name":       owner.Name,
+				"uid":        owner.UID,
+				"apiVersion": owner.APIVersion,
+			},
+		}
+	}
+	return &unstructured.Unstructured{Object: map[string]interface{}{
+		"kind":     kind,
+		"metadata": meta,
+	}}
+}
+
+// storeWithObjs builds an objectStore whose cache is pre-seeded directly, so
+// tests never exec a real kubectl.
+func storeWithObjs(objs map[string]*unstructured.Unstructured) *objectStore {
+	return &objectStore{objs: objs, misses: map[string]bool{}}
+}
 
 func TestWalkOwnerChain(t *testing.T) {
 	rs := ParentResource{Kind: "ReplicaSet", Namespace: "ns", Name: "web-rs", UID: "uid-rs"}
@@ -26,49 +61,53 @@ func TestWalkOwnerChain(t *testing.T) {
 	cj := ParentResource{Kind: "CronJob", Namespace: "ns", Name: "backup", UID: "uid-cj"}
 
 	cases := []struct {
-		name   string
-		start  ParentResource
-		lookup ownerLookup
-		want   []ParentResource
+		name  string
+		start ParentResource
+		store *objectStore
+		want  []ParentResource
 	}{
 		{
-			name:   "ReplicaSet walks to Deployment",
-			start:  rs,
-			lookup: ownerLookup{ownerKey(rs): dep},
-			want:   []ParentResource{rs, dep},
+			name:  "ReplicaSet walks to Deployment",
+			start: rs,
+			store: storeWithObjs(map[string]*unstructured.Unstructured{
+				ownerKey(rs): unstructuredObj("ReplicaSet", "ns", "web-rs", "uid-rs", &dep),
+			}),
+			want: []ParentResource{rs, dep},
 		},
 		{
-			name:   "Job walks to CronJob",
-			start:  job,
-			lookup: ownerLookup{ownerKey(job): cj},
-			want:   []ParentResource{job, cj},
+			name:  "Job walks to CronJob",
+			start: job,
+			store: storeWithObjs(map[string]*unstructured.Unstructured{
+				ownerKey(job): unstructuredObj("Job", "ns", "backup", "uid-job", &cj),
+			}),
+			want: []ParentResource{job, cj},
 		},
 		{
-			name:   "DaemonSet with no further owner stays itself",
-			start:  ParentResource{Kind: "DaemonSet", Namespace: "ns", Name: "agent", UID: "uid-ds"},
-			lookup: ownerLookup{},
-			want:   []ParentResource{{Kind: "DaemonSet", Namespace: "ns", Name: "agent", UID: "uid-ds"}},
+			name:  "DaemonSet with no further owner stays itself",
+			start: ParentResource{Kind: "DaemonSet", Namespace: "ns", Name: "agent", UID: "uid-ds"},
+			store: storeWithObjs(map[string]*unstructured.Unstructured{}),
+			want:  []ParentResource{{Kind: "DaemonSet", Namespace: "ns", Name: "agent", UID: "uid-ds"}},
 		},
 		{
-			name:   "nil lookup returns the start",
-			start:  rs,
-			lookup: nil,
-			want:   []ParentResource{rs},
+			name:  "nil store returns the start",
+			start: rs,
+			store: nil,
+			want:  []ParentResource{rs},
 		},
 		{
 			name:  "cycle stops without looping",
 			start: rs,
-			lookup: ownerLookup{
-				ownerKey(rs):  dep,
-				ownerKey(dep): rs,
-			},
+			store: storeWithObjs(map[string]*unstructured.Unstructured{
+				ownerKey(rs):  unstructuredObj("ReplicaSet", "ns", "web-rs", "uid-rs", &dep),
+				ownerKey(dep): unstructuredObj("Deployment", "ns", "web", "uid-dep", &rs),
+			}),
 			want: []ParentResource{rs, dep},
 		},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := walkOwnerChain(c.start, c.lookup)
+			got := walkOwnerChain(c.store, c.start)
 			if !reflect.DeepEqual(got, c.want) {
 				t.Errorf("got %+v\nwant %+v", got, c.want)
 			}
@@ -77,14 +116,15 @@ func TestWalkOwnerChain(t *testing.T) {
 }
 
 func TestWalkOwnerChainCapsLength(t *testing.T) {
-	lookup := ownerLookup{}
+	objs := map[string]*unstructured.Unstructured{}
 	for i := 0; i < ownerChainLimit+5; i++ {
 		cur := ParentResource{Kind: "X", Namespace: "ns", Name: string(rune('a' + i))}
 		next := ParentResource{Kind: "X", Namespace: "ns", Name: string(rune('a' + i + 1))}
-		lookup[ownerKey(cur)] = next
+		objs[ownerKey(cur)] = unstructuredObj("X", "ns", cur.Name, "", &next)
 	}
+	store := storeWithObjs(objs)
 	start := ParentResource{Kind: "X", Namespace: "ns", Name: "a"}
-	got := walkOwnerChain(start, lookup)
+	got := walkOwnerChain(store, start)
 	if len(got) != ownerChainLimit+1 { // start + 16 steps
 		t.Fatalf("len = %d, want %d", len(got), ownerChainLimit+1)
 	}
@@ -98,7 +138,10 @@ func TestResolveOwnersWalksToRoot(t *testing.T) {
 		Owners: []ParentResource{rs},
 		Parent: &rs,
 	}
-	fr.resolveOwners(ownerLookup{ownerKey(rs): dep})
+	store := storeWithObjs(map[string]*unstructured.Unstructured{
+		ownerKey(rs): unstructuredObj("ReplicaSet", "ns", "web-rs", "uid-rs", &dep),
+	})
+	fr.resolveOwners(store)
 	wantOwners := []ParentResource{rs, dep}
 	if !reflect.DeepEqual(fr.Owners, wantOwners) {
 		t.Errorf("owners = %+v, want %+v", fr.Owners, wantOwners)
@@ -108,7 +151,7 @@ func TestResolveOwnersWalksToRoot(t *testing.T) {
 	}
 }
 
-func TestResolveOwnersKeepsParsedChainWhenLookupEmpty(t *testing.T) {
+func TestResolveOwnersKeepsParsedChainWhenStoreCantExtend(t *testing.T) {
 	rs := ParentResource{Kind: "ReplicaSet", Namespace: "ns", Name: "web-rs", UID: "uid-rs"}
 	dep := ParentResource{Kind: "Deployment", Namespace: "ns", Name: "web", UID: "uid-dep"}
 	fr := FailedResource{
@@ -123,57 +166,110 @@ func TestResolveOwnersKeepsParsedChainWhenLookupEmpty(t *testing.T) {
 	}
 }
 
-func TestOwnerLookupFromListJSON(t *testing.T) {
-	data := []byte(`{
-		"kind": "List",
-		"items": [
-			{
-				"kind": "ReplicaSet",
-				"metadata": {
-					"name": "web-rs",
-					"namespace": "ns",
-					"uid": "uid-rs",
-					"ownerReferences": [
-						{"kind": "Deployment", "name": "web", "uid": "uid-dep", "apiVersion": "apps/v1"}
-					]
-				}
-			},
-			{
-				"kind": "Job",
-				"metadata": {
-					"name": "backup",
-					"namespace": "ns",
-					"ownerReferences": [
-						{"kind": "CronJob", "name": "backup", "uid": "uid-cj"}
-					]
-				}
-			},
-			{
-				"kind": "DaemonSet",
-				"metadata": {"name": "agent", "namespace": "ns"}
-			}
-		]
-	}`)
-	lookup, err := ownerLookupFromListJSON(data)
-	if err != nil {
-		t.Fatal(err)
+func TestObjectStoreGetCachesFetchByKey(t *testing.T) {
+	orig := fetchOne
+	t.Cleanup(func() { fetchOne = orig })
+	calls := 0
+	fetchOne = func(resource, ns, name string, clusterScoped bool) ([]byte, error) {
+		calls++
+		if resource != "replicasets" || ns != "ns" || name != "web-rs" || clusterScoped {
+			t.Errorf("fetchOne called with resource=%q ns=%q name=%q clusterScoped=%v", resource, ns, name, clusterScoped)
+		}
+		return []byte(`{"kind":"ReplicaSet","metadata":{"name":"web-rs","namespace":"ns"}}`), nil
 	}
-	gotRS, ok := lookup[ownerKey(ParentResource{Kind: "ReplicaSet", Namespace: "ns", Name: "web-rs"})]
-	if !ok || gotRS.Kind != "Deployment" || gotRS.Name != "web" || gotRS.UID != "uid-dep" {
-		t.Errorf("ReplicaSet owner = %+v", gotRS)
+
+	store := newObjectStore()
+	for i := 0; i < 3; i++ {
+		o := store.get("ReplicaSet", "ns", "web-rs")
+		if o == nil {
+			t.Fatal("get returned nil")
+		}
 	}
-	gotJob, ok := lookup[ownerKey(ParentResource{Kind: "Job", Namespace: "ns", Name: "backup"})]
-	if !ok || gotJob.Kind != "CronJob" {
-		t.Errorf("Job owner = %+v", gotJob)
-	}
-	if _, ok := lookup[ownerKey(ParentResource{Kind: "DaemonSet", Namespace: "ns", Name: "agent"})]; ok {
-		t.Error("DaemonSet with no ownerReferences should be absent")
+	if calls != 1 {
+		t.Fatalf("fetchOne calls = %d, want 1", calls)
 	}
 }
 
-func TestOwnerLookupFromListJSONRejectsGarbage(t *testing.T) {
-	if _, err := ownerLookupFromListJSON([]byte(`not json`)); err == nil {
-		t.Fatal("want error")
+func TestObjectStoreGetCachesMissWithoutRefetch(t *testing.T) {
+	orig := fetchOne
+	t.Cleanup(func() { fetchOne = orig })
+	calls := 0
+	fetchOne = func(resource, ns, name string, clusterScoped bool) ([]byte, error) {
+		calls++
+		return nil, errors.New("not found")
+	}
+
+	store := newObjectStore()
+	if o := store.get("Pod", "ns", "gone"); o != nil {
+		t.Fatalf("get = %+v, want nil", o)
+	}
+	if o := store.get("Pod", "ns", "gone"); o != nil {
+		t.Fatalf("get = %+v, want nil", o)
+	}
+	if calls != 1 {
+		t.Fatalf("fetchOne calls = %d, want 1", calls)
+	}
+}
+
+func TestObjectStoreGetUnknownKindSkipsFetch(t *testing.T) {
+	orig := fetchOne
+	t.Cleanup(func() { fetchOne = orig })
+	called := false
+	fetchOne = func(resource, ns, name string, clusterScoped bool) ([]byte, error) {
+		called = true
+		return nil, errors.New("should not be called")
+	}
+
+	store := newObjectStore()
+	if o := store.get("EndpointSlice", "ns", "x"); o != nil {
+		t.Fatalf("get = %+v, want nil for an unmapped kind", o)
+	}
+	if called {
+		t.Fatal("fetchOne called for a kind kube-bench has no resource mapping for")
+	}
+}
+
+func TestObjectStoreGetClusterScopedOmitsNamespace(t *testing.T) {
+	orig := fetchOne
+	t.Cleanup(func() { fetchOne = orig })
+	var gotNS string
+	var gotClusterScoped bool
+	fetchOne = func(resource, ns, name string, clusterScoped bool) ([]byte, error) {
+		gotNS, gotClusterScoped = ns, clusterScoped
+		return []byte(`{"kind":"Node","metadata":{"name":"n1"}}`), nil
+	}
+
+	store := newObjectStore()
+	store.get("Node", "", "n1")
+	if !gotClusterScoped {
+		t.Error("Node should be requested as cluster-scoped")
+	}
+	if gotNS != "" {
+		t.Errorf("namespace = %q, want empty for a cluster-scoped kind", gotNS)
+	}
+}
+
+func TestGetClusterUIDFetchesKubeSystemOnceAndCaches(t *testing.T) {
+	orig := fetchOne
+	t.Cleanup(func() { fetchOne = orig })
+	calls := 0
+	fetchOne = func(resource, ns, name string, clusterScoped bool) ([]byte, error) {
+		calls++
+		if resource != "namespaces" || name != "kube-system" {
+			t.Errorf("fetchOne called with resource=%q name=%q, want namespaces/kube-system", resource, name)
+		}
+		return []byte(`{"kind":"Namespace","metadata":{"name":"kube-system","uid":"cluster-uid-1"}}`), nil
+	}
+
+	store := newObjectStore()
+	if got := store.getClusterUID(); got != "cluster-uid-1" {
+		t.Fatalf("getClusterUID = %q, want cluster-uid-1", got)
+	}
+	if got := store.getClusterUID(); got != "cluster-uid-1" {
+		t.Fatalf("getClusterUID (2nd call) = %q, want cluster-uid-1", got)
+	}
+	if calls != 1 {
+		t.Fatalf("fetchOne calls = %d, want 1", calls)
 	}
 }
 
@@ -215,15 +311,16 @@ groups:
 	return c
 }
 
-func TestRunChecksResolvesParentFromLookup(t *testing.T) {
+func TestRunChecksResolvesParentFromFetchedOwner(t *testing.T) {
 	rs := ParentResource{Kind: "ReplicaSet", Namespace: "ns", Name: "web-rs", UID: "uid-rs"}
 	dep := ParentResource{Kind: "Deployment", Namespace: "ns", Name: "web", UID: "uid-dep"}
-	orig := fetchObjectStore
 	resetObjectStoreCache()
-	t.Cleanup(func() { fetchObjectStore = orig; resetObjectStoreCache() })
-	fetchObjectStore = func() *objectStore {
-		return &objectStore{lookup: ownerLookup{ownerKey(rs): dep}}
-	}
+	t.Cleanup(resetObjectStoreCache)
+	objectStoreOnce.Do(func() {
+		cachedObjectStore = storeWithObjs(map[string]*unstructured.Unstructured{
+			ownerKey(rs): unstructuredObj("ReplicaSet", "ns", "web-rs", "uid-rs", &dep),
+		})
+	})
 
 	controls := policiesControls(t, 1)
 	runner := stubRunner{resources: []FailedResource{{
@@ -246,64 +343,87 @@ func TestRunChecksResolvesParentFromLookup(t *testing.T) {
 	}
 }
 
-func TestRunChecksDoesNotFetchStoreWithoutResources(t *testing.T) {
-	orig := fetchObjectStore
+func TestRunChecksDoesNotFetchWithoutFailedResources(t *testing.T) {
+	orig := fetchOne
 	resetObjectStoreCache()
-	t.Cleanup(func() { fetchObjectStore = orig; resetObjectStoreCache() })
+	t.Cleanup(func() { fetchOne = orig; resetObjectStoreCache() })
 	called := false
-	fetchObjectStore = func() *objectStore {
+	fetchOne = func(resource, ns, name string, clusterScoped bool) ([]byte, error) {
 		called = true
-		return nil
+		return nil, errors.New("should not be called")
 	}
 
 	controls := policiesControls(t, 1)
 	runner := stubRunner{}
 	controls.RunChecks(runner, func(*Group, *Check) bool { return true }, map[string]bool{})
 	if called {
-		t.Fatal("fetched inventory snapshot for a check with no failed resources")
+		t.Fatal("fetched an object for a check with no failed resources")
 	}
 }
 
-func TestRunChecksFetchesOwnerLookupOnce(t *testing.T) {
-	rs := ParentResource{Kind: "ReplicaSet", Namespace: "ns", Name: "web-rs", UID: "uid-rs"}
-	orig := fetchObjectStore
-	resetObjectStoreCache()
-	t.Cleanup(func() { fetchObjectStore = orig; resetObjectStoreCache() })
-	calls := 0
-	fetchObjectStore = func() *objectStore {
-		calls++
-		return &objectStore{lookup: ownerLookup{}}
+// countingFetchOne returns a fetchOne stub that records how many times each
+// distinct (resource, name) pair was actually exec'd, and a valid canned
+// object for any request (kind is irrelevant to the caching behavior under
+// test).
+func countingFetchOne(t *testing.T) (fn func(resource, ns, name string, clusterScoped bool) ([]byte, error), calls map[string]int) {
+	t.Helper()
+	calls = map[string]int{}
+	fn = func(resource, ns, name string, clusterScoped bool) ([]byte, error) {
+		calls[resource+"/"+ns+"/"+name]++
+		return []byte(`{"kind":"ReplicaSet","metadata":{"name":"` + name + `","namespace":"` + ns + `"}}`), nil
 	}
+	return fn, calls
+}
+
+// TestObjectStoreDeduplicatesFetchesWithinRunChecks is the narrow-fetch perf
+// property: many checks whose failed resources share one parent (or resolve
+// to the same object, like the one-time cluster UID lookup) only pay for that
+// object's kubectl get once, no matter how many checks reference it.
+func TestObjectStoreDeduplicatesFetchesWithinRunChecks(t *testing.T) {
+	rs := ParentResource{Kind: "ReplicaSet", Namespace: "ns", Name: "web-rs", UID: "uid-rs"}
+	orig := fetchOne
+	resetObjectStoreCache()
+	t.Cleanup(func() { fetchOne = orig; resetObjectStoreCache() })
+	fn, calls := countingFetchOne(t)
+	fetchOne = fn
 
 	controls := policiesControls(t, 2)
 	runner := stubRunner{resources: []FailedResource{{
 		Kind: "Pod", Owners: []ParentResource{rs}, Parent: &rs, Scope: ScopeWorkload,
-		Name: "p", UID: "u",
+		Name: "p", UID: "u", Namespace: "ns",
 	}}}
 	controls.RunChecks(runner, func(*Group, *Check) bool { return true }, map[string]bool{})
-	if calls != 1 {
-		t.Fatalf("fetchObjectStore calls = %d, want 1", calls)
+
+	// Both checks report the identical Pod, so every distinct object kube-bench
+	// had to fetch (the Pod itself, its ReplicaSet owner, the one-time
+	// kube-system lookup for cluster UID) must appear exactly once, not once
+	// per check.
+	for key, n := range calls {
+		if n != 1 {
+			t.Errorf("fetchOne calls for %s = %d, want 1", key, n)
+		}
+	}
+	if len(calls) == 0 {
+		t.Fatal("fetchOne was never called")
 	}
 }
 
-// TestObjectStoreCachedAcrossRunChecks is the actual perf fix: a single
-// `kube-bench run` calls RunChecks once per target (node, policies, CBP...).
-// Each of those used to pay for its own full-cluster kubectl snapshot; now the
-// snapshot is fetched once per process and shared.
+// TestObjectStoreCachedAcrossRunChecks is the actual perf fix carried over
+// from the bulk-snapshot design: a single `kube-bench run` calls RunChecks
+// once per target (node, policies, CBP...). The object cache is shared across
+// those calls, so an object fetched while resolving one target's failures is
+// still cached for the next.
 func TestObjectStoreCachedAcrossRunChecks(t *testing.T) {
 	rs := ParentResource{Kind: "ReplicaSet", Namespace: "ns", Name: "web-rs", UID: "uid-rs"}
-	orig := fetchObjectStore
+	orig := fetchOne
 	resetObjectStoreCache()
-	t.Cleanup(func() { fetchObjectStore = orig; resetObjectStoreCache() })
-	calls := 0
-	fetchObjectStore = func() *objectStore {
-		calls++
-		return &objectStore{lookup: ownerLookup{}}
-	}
+	t.Cleanup(func() { fetchOne = orig; resetObjectStoreCache() })
+	fn, calls := countingFetchOne(t)
+	fetchOne = fn
 
 	runner := stubRunner{resources: []FailedResource{{
 		Kind: "Pod", Owners: []ParentResource{rs}, Parent: &rs, Scope: ScopeWorkload,
-		Name: "p", UID: "u",
+		Name: "p", UID: "u", Namespace: "ns",
 	}}}
 	runAll := func(*Group, *Check) bool { return true }
 
@@ -312,7 +432,12 @@ func TestObjectStoreCachedAcrossRunChecks(t *testing.T) {
 	policiesControls(t, 1).RunChecks(runner, runAll, map[string]bool{})
 	policiesControls(t, 1).RunChecks(runner, runAll, map[string]bool{})
 
-	if calls != 1 {
-		t.Fatalf("fetchObjectStore calls across two RunChecks = %d, want 1", calls)
+	for key, n := range calls {
+		if n != 1 {
+			t.Errorf("fetchOne calls for %s across two RunChecks = %d, want 1", key, n)
+		}
+	}
+	if len(calls) == 0 {
+		t.Fatal("fetchOne was never called")
 	}
 }

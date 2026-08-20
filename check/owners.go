@@ -26,34 +26,184 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-// objectStoreFetchTimeout bounds the single kubectl snapshot call. Without it, an
-// unresponsive API server hangs RunChecks (and the whole kube-bench run) forever.
-const objectStoreFetchTimeout = 30 * time.Second
+// objectFetchTimeout bounds each single-object kubectl get. Without it, an
+// unresponsive API server hangs RunChecks (and the whole kube-bench run)
+// forever on any one lookup in the owner walk.
+const objectFetchTimeout = 30 * time.Second
 
 // ownerChainLimit matches inventory-collector's walk bound against cyclic refs.
 const ownerChainLimit = 16
-
-// ownerLookup maps Kind/ns/name of an object to its first ownerReference.
-// Same walk inventory uses: ReplicaSet → Deployment, Job → CronJob.
-type ownerLookup map[string]ParentResource
 
 func ownerKey(p ParentResource) string {
 	return p.Kind + "/" + p.Namespace + "/" + p.Name
 }
 
-// walkOwnerChain starts at the immediate controller and follows lookup up to
-// the root. The last element is inventory's parent.
-func walkOwnerChain(start ParentResource, lookup ownerLookup) []ParentResource {
+// kindToResource maps a Kind (as seen on a FailedResource or an
+// ownerReference) to the lowercase resource name kubectl expects. Only kinds
+// failed_resources / owner chains can actually name are listed; an unlisted
+// Kind is a deliberate no-op in fetch, not an error.
+var kindToResource = map[string]string{
+	"Pod":                "pods",
+	"ReplicaSet":         "replicasets",
+	"Deployment":         "deployments",
+	"DaemonSet":          "daemonsets",
+	"StatefulSet":        "statefulsets",
+	"Job":                "jobs",
+	"CronJob":            "cronjobs",
+	"Namespace":          "namespaces",
+	"Node":               "nodes",
+	"Role":               "roles",
+	"RoleBinding":        "rolebindings",
+	"ClusterRole":        "clusterroles",
+	"ClusterRoleBinding": "clusterrolebindings",
+	"ServiceAccount":     "serviceaccounts",
+	"NetworkPolicy":      "networkpolicies",
+	"Service":            "services",
+}
+
+// clusterScopedKinds never take a -n flag.
+var clusterScopedKinds = map[string]bool{
+	"Namespace":          true,
+	"Node":               true,
+	"ClusterRole":        true,
+	"ClusterRoleBinding": true,
+}
+
+// objectStore is a per-process cache of individually-fetched kubectl objects.
+// Unlike a bulk cluster snapshot, it only ever holds objects that were
+// actually asked for: a failed resource plus however far up its owner chain
+// gets walked. Every distinct object is fetched at most once per process, so
+// many failed resources sharing one parent (e.g. pods under a Deployment)
+// still pay for that parent only once, and the payload of each fetch is a
+// single object instead of every object of every kind cluster-wide.
+type objectStore struct {
+	mu             sync.Mutex
+	objs           map[string]*unstructured.Unstructured
+	misses         map[string]bool
+	clusterName    string
+	clusterUID     string
+	clusterUIDOnce sync.Once
+}
+
+func newObjectStore() *objectStore {
+	return &objectStore{
+		objs:        map[string]*unstructured.Unstructured{},
+		misses:      map[string]bool{},
+		clusterName: inventoryClusterName(),
+	}
+}
+
+// fetchOne does a single-object kubectl get. Tests replace it.
+var fetchOne = kubectlGetOne
+
+func kubectlGetOne(resource, ns, name string, clusterScoped bool) ([]byte, error) {
+	if _, err := exec.LookPath("kubectl"); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), objectFetchTimeout)
+	defer cancel()
+	args := []string{"get", resource, name, "-o", "json"}
+	if !clusterScoped {
+		args = append(args, "-n", ns)
+	}
+	return exec.CommandContext(ctx, "kubectl", args...).Output()
+}
+
+// get returns the object identified by kind/ns/name, fetching and caching it
+// on first request. A Kind kube-bench has no mapping for, or a lookup that
+// errors (RBAC, not found, kubectl missing, timeout), is cached as a
+// permanent miss so a repeated request for the same object doesn't re-exec
+// kubectl.
+func (s *objectStore) get(kind, ns, name string) *unstructured.Unstructured {
+	if s == nil || kind == "" || name == "" {
+		return nil
+	}
+	key := ownerKey(ParentResource{Kind: kind, Namespace: ns, Name: name})
+
+	s.mu.Lock()
+	if o, ok := s.objs[key]; ok {
+		s.mu.Unlock()
+		return o
+	}
+	if s.misses[key] {
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
+
+	o := s.fetch(kind, ns, name)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if o == nil {
+		s.misses[key] = true
+		return nil
+	}
+	s.objs[key] = o
+	return o
+}
+
+func (s *objectStore) fetch(kind, ns, name string) *unstructured.Unstructured {
+	resource, ok := kindToResource[kind]
+	if !ok {
+		return nil
+	}
+	data, err := fetchOne(resource, ns, name, clusterScopedKinds[kind])
+	if err != nil {
+		glog.V(2).Infof("inventory lookup skipped for %s %s/%s: %v", kind, ns, name, err)
+		return nil
+	}
+	var o unstructured.Unstructured
+	if err := json.Unmarshal(data, &o.Object); err != nil {
+		glog.V(2).Infof("inventory lookup parse for %s %s/%s: %v", kind, ns, name, err)
+		return nil
+	}
+	return &o
+}
+
+// getClusterUID resolves the cluster's UID from the kube-system Namespace,
+// fetched (and cached) at most once per process, only when something actually
+// needs it.
+func (s *objectStore) getClusterUID() string {
+	if s == nil {
+		return ""
+	}
+	s.clusterUIDOnce.Do(func() {
+		if ns := s.get("Namespace", "", "kube-system"); ns != nil {
+			s.clusterUID = string(ns.GetUID())
+		}
+	})
+	return s.clusterUID
+}
+
+// walkOwnerChain starts at the immediate controller and repeatedly fetches
+// the current link's own object to read its owner, up to ownerChainLimit.
+// Each link only costs a kubectl call the first time any failed resource's
+// chain passes through it; siblings sharing a parent reuse the cached fetch.
+// The last element is inventory's parent.
+func walkOwnerChain(store *objectStore, start ParentResource) []ParentResource {
 	chain := []ParentResource{start}
-	if lookup == nil || start.Kind == "" || start.Name == "" {
+	if store == nil || start.Kind == "" || start.Name == "" {
 		return chain
 	}
 	seen := map[string]bool{ownerKey(start): true}
 	cur := start
 	for i := 0; i < ownerChainLimit; i++ {
-		next, ok := lookup[ownerKey(cur)]
-		if !ok || next.Kind == "" || next.Name == "" {
+		o := store.get(cur.Kind, cur.Namespace, cur.Name)
+		if o == nil {
 			break
+		}
+		refs := o.GetOwnerReferences()
+		if len(refs) == 0 {
+			break
+		}
+		ref := refs[0]
+		if ref.Kind == "" || ref.Name == "" {
+			break
+		}
+		next := ParentResource{
+			Kind: ref.Kind, Namespace: o.GetNamespace(), Name: ref.Name,
+			UID: string(ref.UID), APIVersion: ref.APIVersion,
 		}
 		k := ownerKey(next)
 		if seen[k] {
@@ -66,153 +216,48 @@ func walkOwnerChain(start ParentResource, lookup ownerLookup) []ParentResource {
 	return chain
 }
 
-// resolveOwners replaces Owners with the walked chain when lookup can extend
-// it, then points Parent at the root. A nil/empty lookup leaves a parsed chain
-// alone so repeated owner= tokens still win.
-func (fr *FailedResource) resolveOwners(lookup ownerLookup) {
+// resolveOwners walks fr's chain further via store when possible, then
+// points Parent at the root. A nil store, or one that can't extend the
+// chain, leaves a parsed chain alone so repeated owner= tokens still win.
+func (fr *FailedResource) resolveOwners(store *objectStore) {
 	if len(fr.Owners) == 0 {
 		return
 	}
-	chain := walkOwnerChain(fr.Owners[0], lookup)
+	chain := walkOwnerChain(store, fr.Owners[0])
 	if len(chain) > len(fr.Owners) {
 		fr.Owners = chain
 	}
 	fr.setParentFromOwners()
 }
 
-func (c *Check) resolveFailedResourceOwners(lookup ownerLookup) {
+func (c *Check) resolveFailedResourceOwners(store *objectStore) {
 	for i := range c.FailedResources {
-		c.FailedResources[i].resolveOwners(lookup)
+		c.FailedResources[i].resolveOwners(store)
 	}
 }
-
-// k8sList is the kubectl -o json List shape used to build an objectStore
-// without putting the dump on jq's argv (E2BIG).
-type k8sList struct {
-	Items []map[string]interface{} `json:"items"`
-}
-
-// objectStore is one kubectl snapshot: every object plus an owner lookup built
-// from their ownerReferences. Failed resources are filled from here so the
-// backend can create a provisional inventory row before the collector runs.
-type objectStore struct {
-	lookup      ownerLookup
-	objs        map[string]*unstructured.Unstructured
-	clusterName string
-	clusterUID  string
-}
-
-func (s *objectStore) get(kind, ns, name string) *unstructured.Unstructured {
-	if s == nil || s.objs == nil {
-		return nil
-	}
-	return s.objs[ownerKey(ParentResource{Kind: kind, Namespace: ns, Name: name})]
-}
-
-func objectStoreFromListJSON(data []byte) (*objectStore, error) {
-	var list k8sList
-	if err := json.Unmarshal(data, &list); err != nil {
-		return nil, err
-	}
-	store := &objectStore{
-		lookup:      ownerLookup{},
-		objs:        map[string]*unstructured.Unstructured{},
-		clusterName: inventoryClusterName(),
-	}
-	for _, raw := range list.Items {
-		o := &unstructured.Unstructured{Object: raw}
-		kind, ns, name := o.GetKind(), o.GetNamespace(), o.GetName()
-		if kind == "" || name == "" {
-			continue
-		}
-		key := ownerKey(ParentResource{Kind: kind, Namespace: ns, Name: name})
-		store.objs[key] = o
-		if kind == "Namespace" && name == "kube-system" {
-			store.clusterUID = string(o.GetUID())
-		}
-		refs := o.GetOwnerReferences()
-		if len(refs) == 0 {
-			continue
-		}
-		ref := refs[0]
-		if ref.Kind == "" || ref.Name == "" {
-			continue
-		}
-		store.lookup[key] = ParentResource{
-			Kind: ref.Kind, Namespace: ns, Name: ref.Name,
-			UID: string(ref.UID), APIVersion: ref.APIVersion,
-		}
-	}
-	return store, nil
-}
-
-func ownerLookupFromListJSON(data []byte) (ownerLookup, error) {
-	store, err := objectStoreFromListJSON(data)
-	if err != nil {
-		return nil, err
-	}
-	return store.lookup, nil
-}
-
-// inventorySnapshotResources is the one kubectl get that feeds both the owner
-// walk and the inventory-shaped filler. Includes controllers plus every kind
-// CBP failed_resources can name.
-const inventorySnapshotResources = "pods,replicasets,deployments,daemonsets,statefulsets,jobs,cronjobs,namespaces,nodes,roles,rolebindings,clusterroles,clusterrolebindings,serviceaccounts,networkpolicies,services"
-
-// fetchObjectStore loads the kubectl snapshot. Tests replace it.
-var fetchObjectStore = loadObjectStore
 
 var (
 	objectStoreOnce   sync.Once
 	cachedObjectStore *objectStore
 )
 
-// getObjectStore returns the process-wide kubectl snapshot, fetching it at most
-// once per process no matter how many RunChecks calls need it. A single
-// `kube-bench run` invokes RunChecks once per target (node, policies, CBP...);
-// without this, every target with failures paid for its own full
-// --all-namespaces kubectl listing.
+// getObjectStore returns the process-wide object cache, created at most once
+// no matter how many RunChecks calls need it. A single `kube-bench run`
+// invokes RunChecks once per target (node, policies, CBP...); sharing the
+// store means an owner discovered while resolving one target's failures is
+// still cached for the next.
 func getObjectStore() *objectStore {
 	objectStoreOnce.Do(func() {
-		cachedObjectStore = fetchObjectStore()
+		cachedObjectStore = newObjectStore()
 	})
 	return cachedObjectStore
 }
 
-// resetObjectStoreCache clears the memoized snapshot so the next getObjectStore
-// call re-fetches. Tests use this to get per-test isolation.
+// resetObjectStoreCache clears the memoized store so the next getObjectStore
+// call builds a fresh one. Tests use this to get per-test isolation.
 func resetObjectStoreCache() {
 	objectStoreOnce = sync.Once{}
 	cachedObjectStore = nil
-}
-
-func loadObjectStore() *objectStore {
-	if _, err := exec.LookPath("kubectl"); err != nil {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), objectStoreFetchTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "kubectl", "get", inventorySnapshotResources, "--all-namespaces", "-o", "json")
-	out, err := cmd.Output()
-	// kubectl still writes a valid combined List for every kind it *could* read even when
-	// one requested kind is Forbidden (missing RBAC) — it just exits non-zero. Parse `out`
-	// regardless of err so one missing kind doesn't blank the whole snapshot; only bail when
-	// there's nothing usable to parse.
-	if len(out) == 0 {
-		if err != nil {
-			glog.V(2).Infof("inventory snapshot skipped: %v", err)
-		}
-		return nil
-	}
-	store, parseErr := objectStoreFromListJSON(out)
-	if parseErr != nil {
-		glog.V(2).Infof("inventory snapshot parse: %v (kubectl err: %v)", parseErr, err)
-		return nil
-	}
-	if err != nil {
-		glog.V(2).Infof("inventory snapshot partial (some kinds unreadable): %v", err)
-	}
-	return store
 }
 
 func inventoryClusterName() string {

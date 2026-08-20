@@ -62,11 +62,14 @@ func TestFillInventoryPodMatchesCollector(t *testing.T) {
 	dep := ParentResource{Kind: "Deployment", Namespace: "ns", Name: "web", UID: "uid-dep"}
 	fr := FailedResource{Kind: "Pod", Namespace: "ns", Name: "web", Scope: ScopeWorkload}
 	store := &objectStore{
-		lookup:      ownerLookup{ownerKey(rs): dep},
-		objs:        map[string]*unstructured.Unstructured{ownerKey(ParentResource{Kind: "Pod", Namespace: "ns", Name: "web"}): toUnstructured(t, pod)},
+		objs: map[string]*unstructured.Unstructured{
+			ownerKey(ParentResource{Kind: "Pod", Namespace: "ns", Name: "web"}): toUnstructured(t, pod),
+			ownerKey(rs): unstructuredObj("ReplicaSet", "ns", "web-rs", "uid-rs", &dep),
+		},
+		misses:      map[string]bool{},
 		clusterName: "prod",
-		clusterUID:  "cu1",
 	}
+	store.clusterUIDOnce.Do(func() { store.clusterUID = "cu1" })
 	fr.fillInventory(store, 99)
 
 	if fr.UID != "uid-pod" || fr.Node != "n1" || fr.PodIP != "10.0.0.1" || fr.Phase != "Running" {
@@ -109,6 +112,7 @@ func TestFillInventoryNodeProviderID(t *testing.T) {
 		objs: map[string]*unstructured.Unstructured{
 			ownerKey(ParentResource{Kind: "Node", Name: "n1"}): toUnstructured(t, node),
 		},
+		misses: map[string]bool{},
 	}
 	fr.fillInventory(store, 1)
 	if fr.NodeDetail == nil || fr.NodeDetail.ProviderID != "aws:///us-east-1a/i-0abc" || fr.NodeDetail.Region != "us-east-1" {

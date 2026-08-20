@@ -48,19 +48,19 @@ func (c *Check) fillInventory(store *objectStore) {
 func (fr *FailedResource) fillInventory(store *objectStore, eventTime int64) {
 	o := store.get(fr.Kind, fr.Namespace, fr.Name)
 	if o == nil {
-		fr.resolveOwners(store.lookup)
+		fr.resolveOwners(store)
 		return
 	}
-	applyInventoryIdentity(fr, o, store.clusterName, store.clusterUID, eventTime)
+	applyInventoryIdentity(fr, o, store.clusterName, store.getClusterUID(), eventTime)
 	if refs := o.GetOwnerReferences(); len(refs) > 0 {
 		start := ParentResource{
 			Kind: refs[0].Kind, Namespace: o.GetNamespace(),
 			Name: refs[0].Name, UID: string(refs[0].UID), APIVersion: refs[0].APIVersion,
 		}
-		fr.Owners = walkOwnerChain(start, store.lookup)
+		fr.Owners = walkOwnerChain(store, start)
 		fr.setParentFromOwners()
 	} else {
-		fr.resolveOwners(store.lookup)
+		fr.resolveOwners(store)
 	}
 	switch fr.Kind {
 	case "Pod":
