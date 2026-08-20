@@ -21,3 +21,6 @@ spotter
 
 # Cloudanix internal design docs — not for the public repo
 docs-internal/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+graft/
