@@ -230,12 +230,6 @@ func (fr *FailedResource) resolveOwners(store *objectStore) {
 	fr.setParentFromOwners()
 }
 
-func (c *Check) resolveFailedResourceOwners(store *objectStore) {
-	for i := range c.FailedResources {
-		c.FailedResources[i].resolveOwners(store)
-	}
-}
-
 var (
 	objectStoreOnce   sync.Once
 	cachedObjectStore *objectStore
