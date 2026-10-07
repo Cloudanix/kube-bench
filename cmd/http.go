@@ -160,52 +160,34 @@ func initHttpConfig(path string) (*HttpPostConfig, error) {
 	return cfg, nil
 }
 
+// writeHttpOutput posts the results to the listener. Every failure exits
+// non-zero: a scan whose results never reached the listener must surface as a
+// Failed Job, not a Completed one, so CronJob status and diagnostics show it.
 func writeHttpOutput(controlsCollection []*check.Controls) {
-	// fmt.Printf("processing http output \n")
-
 	resultsJson, err := marshalControls(controlsCollection)
 	if err != nil {
-		fmt.Printf("failed to marshal controlsCollection: %s\n", err)
-		return
+		exitWithError(fmt.Errorf("failed to marshal controlsCollection: %w", err))
 	}
 
 	cfgFile := "/etc/cdx/config/config.yaml"
 	cfg, err := initHttpConfig(cfgFile)
 	if err != nil {
-		fmt.Printf("failed to load http-post config: %s - %s\n", cfgFile, err)
-		return
+		exitWithError(fmt.Errorf("failed to load http-post config: %s - %w", cfgFile, err))
 	}
 
 	sctFile := "/etc/cdx/secrets/auth-token"
 	cfg.AuthToken, err = readSecretFile(sctFile)
 	if err != nil {
+		// Keep going: the listener's 401 is then reported with full context below.
 		fmt.Printf("Unable to initialize auth token: %v - %v\n", sctFile, err)
 	}
-
-	fmt.Println("secrets initialized")
 
 	cfg.NodeName = os.Getenv("NODE_NAME")
 	cfg.ServiceVersion = os.Getenv("SERVICE_VERSION")
 
-	// fmt.Printf("config: %s\n", cfg)
-
-	err = publishResults(cfg, resultsJson)
-	if err != nil {
-		fmt.Printf("failed to publish results to http endpoint: %s \n", err)
-		return
+	if err := publishResults(cfg, resultsJson); err != nil {
+		exitWithError(fmt.Errorf("failed to publish results to http endpoint: %w", err))
 	}
-
-	// viperConfigFile := "abc.json"
-	// err = viper.WriteConfigAs(viperConfigFile)
-	// if err != nil {
-	// 	fmt.Printf("error writing viper config to file: %s \n", err)
-	// }
-
-	// dat, err := os.ReadFile(viperConfigFile)
-	// if err != nil {
-	// 	fmt.Printf("error reading viper config file: %s \n", err)
-	// }
-	// fmt.Printf("contents from abc.json config file: %s \n", string(dat))
 }
 
 func publishResults(cfg *HttpPostConfig, resultsJson []byte) error {

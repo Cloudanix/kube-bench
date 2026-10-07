@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -96,5 +98,22 @@ clusterDomain: AWS
 	}
 	if cfg.RequestTimeout != 30 || cfg.HTTPMaxRetries != 3 || cfg.LogLevel != "info" {
 		t.Errorf("legacy defaults = %d/%d/%q", cfg.RequestTimeout, cfg.HTTPMaxRetries, cfg.LogLevel)
+	}
+}
+
+func TestPublishResultsStatusHandling(t *testing.T) {
+	for _, tc := range []struct {
+		status  int
+		wantErr bool
+	}{{http.StatusOK, false}, {http.StatusUnauthorized, true}, {http.StatusInternalServerError, true}} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(tc.status)
+		}))
+		cfg := &HttpPostConfig{ListenerUrl: srv.URL, RequestTimeout: 5, HTTPMaxRetries: 0}
+		err := publishResults(cfg, []byte("[]"))
+		srv.Close()
+		if (err != nil) != tc.wantErr {
+			t.Errorf("status %d: err=%v, wantErr=%v", tc.status, err, tc.wantErr)
+		}
 	}
 }
