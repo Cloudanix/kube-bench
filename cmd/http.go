@@ -186,6 +186,11 @@ func writeHttpOutput(controlsCollection []*check.Controls) {
 
 	cfg.NodeName = os.Getenv("NODE_NAME")
 	cfg.ServiceVersion = os.Getenv("SERVICE_VERSION")
+	if cfg.ServiceVersion == "" {
+		// No chart sets SERVICE_VERSION, and config-manager patches the image
+		// without touching env, so the build-time version is the reliable one.
+		cfg.ServiceVersion = KubeBenchVersion
+	}
 
 	fmt.Printf("scan summary: %s\n", summarizeControls(controlsCollection))
 
