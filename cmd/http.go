@@ -20,7 +20,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/aquasecurity/kube-bench/check"
@@ -185,23 +187,35 @@ func writeHttpOutput(controlsCollection []*check.Controls) {
 	cfg.NodeName = os.Getenv("NODE_NAME")
 	cfg.ServiceVersion = os.Getenv("SERVICE_VERSION")
 
+	fmt.Printf("scan summary: %s\n", summarizeControls(controlsCollection))
+
 	if err := publishResults(cfg, resultsJson); err != nil {
 		exitWithError(fmt.Errorf("failed to publish results to http endpoint: %w", err))
 	}
 }
 
-func publishResults(cfg *HttpPostConfig, resultsJson []byte) error {
-	// // fetch all env variables
-	// for _, element := range os.Environ() {
-	// 	variable := strings.Split(element, "=")
-	// 	fmt.Println(variable[0], "=>", variable[1])
-	// }
+// summarizeControls renders benchmark versions and pass/fail/warn totals so a
+// customer's pod log shows what was scanned without the full payload.
+func summarizeControls(controlsCollection []*check.Controls) string {
+	var versions []string
+	var pass, fail, warn int
+	for _, c := range controlsCollection {
+		versions = append(versions, c.Version)
+		pass += c.Pass
+		fail += c.Fail
+		warn += c.Warn
+	}
+	return fmt.Sprintf("benchmarks=%s pass=%d fail=%d warn=%d", strings.Join(versions, ","), pass, fail, warn)
+}
 
+func publishResults(cfg *HttpPostConfig, resultsJson []byte) error {
 	// retryablehttp retries on transport errors / 429 / 5xx with exponential
-	// backoff up to RetryMax, reusing the same request body.
+	// backoff up to RetryMax, reusing the same request body. Passthrough keeps
+	// the final response after retries are exhausted so its status gets logged.
 	rc := retry.NewClient()
 	rc.RetryMax = cfg.HTTPMaxRetries
 	rc.HTTPClient.Timeout = time.Duration(cfg.RequestTimeout) * time.Second
+	rc.ErrorHandler = retry.PassthroughErrorHandler
 	client := rc.StandardClient()
 
 	req, err := http.NewRequest(http.MethodPost, cfg.ListenerUrl, bytes.NewReader(resultsJson))
@@ -209,11 +223,10 @@ func publishResults(cfg *HttpPostConfig, resultsJson []byte) error {
 		return err
 	}
 
+	sessionID := uuid.New().String()
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Add(HeaderAuthorization, fmt.Sprintf("Bearer %s", cfg.AuthToken))
-
-	req.Header.Add(HeaderSessionId, uuid.New().String())
-
+	req.Header.Add(HeaderSessionId, sessionID)
 	req.Header.Add(HeaderAccountId, cfg.AccountId)
 	req.Header.Add(HeaderClusterIdentifier, cfg.ClusterIdentifier)
 	req.Header.Add(HeaderClusterName, cfg.ClusterName)
@@ -222,13 +235,24 @@ func publishResults(cfg *HttpPostConfig, resultsJson []byte) error {
 	req.Header.Add(HeaderSvcVersion, cfg.ServiceVersion)
 	req.Header.Add(HeaderTemplateType, "KUBERNETESMISCONFIG")
 
+	start := time.Now()
 	resp, err := client.Do(req)
+	status := "none"
+	if resp != nil {
+		status = resp.Status
+	}
+	// One greppable line per run: answers "did it send, where, what came back".
+	// The session id matches the backend's cdx-session-id for cross-referencing.
+	// Never the token value, only whether one is set.
+	fmt.Printf("publish summary: url=%s status=%q bytes=%d duration=%s session=%s account=%s cluster=%s node=%s version=%q token_present=%t\n",
+		redactURL(cfg.ListenerUrl), status, len(resultsJson), time.Since(start).Round(time.Millisecond),
+		sessionID, cfg.AccountId, cfg.ClusterIdentifier, cfg.NodeName, cfg.ServiceVersion, strings.TrimSpace(cfg.AuthToken) != "")
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxLoggedResponseBytes))
 	if err != nil {
 		fmt.Printf("error reading response: %s\n", err)
 	}
@@ -236,10 +260,24 @@ func publishResults(cfg *HttpPostConfig, resultsJson []byte) error {
 	fmt.Printf("response from post: %s\n", string(body))
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status %d from %s", resp.StatusCode, cfg.ListenerUrl)
+		return fmt.Errorf("unexpected status %d from %s", resp.StatusCode, redactURL(cfg.ListenerUrl))
 	}
 
 	return nil
+}
+
+// maxLoggedResponseBytes caps how much of the listener's response body is logged.
+const maxLoggedResponseBytes = 4096
+
+// redactURL drops userinfo and query string, which could carry credentials.
+func redactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "<unparseable>"
+	}
+	u.User = nil
+	u.RawQuery = ""
+	return u.String()
 }
 
 func readSecretFile(path string) (string, error) {

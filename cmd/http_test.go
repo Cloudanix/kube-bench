@@ -117,3 +117,10 @@ func TestPublishResultsStatusHandling(t *testing.T) {
 		}
 	}
 }
+
+func TestRedactURL(t *testing.T) {
+	got := redactURL("https://user:pw@listener.example.com/k8s?token=abc")
+	if want := "https://listener.example.com/k8s"; got != want {
+		t.Errorf("redactURL = %q, want %q", got, want)
+	}
+}
