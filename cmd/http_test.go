@@ -105,7 +105,10 @@ func TestPublishResultsStatusHandling(t *testing.T) {
 	for _, tc := range []struct {
 		status  int
 		wantErr bool
-	}{{http.StatusOK, false}, {http.StatusUnauthorized, true}, {http.StatusInternalServerError, true}} {
+	}{
+		{http.StatusOK, false}, {http.StatusAccepted, false}, {http.StatusNoContent, false},
+		{http.StatusUnauthorized, true}, {http.StatusInternalServerError, true},
+	} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(tc.status)
 		}))

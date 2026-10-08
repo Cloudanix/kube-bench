@@ -264,7 +264,7 @@ func publishResults(cfg *HttpPostConfig, resultsJson []byte) error {
 
 	fmt.Printf("response from post: %s\n", string(body))
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return fmt.Errorf("unexpected status %d from %s", resp.StatusCode, redactURL(cfg.ListenerUrl))
 	}
 
