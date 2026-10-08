@@ -17,6 +17,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -221,6 +222,13 @@ func publishResults(cfg *HttpPostConfig, resultsJson []byte) error {
 	rc.RetryMax = cfg.HTTPMaxRetries
 	rc.HTTPClient.Timeout = time.Duration(cfg.RequestTimeout) * time.Second
 	rc.ErrorHandler = retry.PassthroughErrorHandler
+	// The library's logger prints the full URL (query included); log retries ourselves.
+	rc.Logger = nil
+	rc.RequestLogHook = func(_ retry.Logger, _ *http.Request, attempt int) {
+		if attempt > 0 {
+			fmt.Printf("retrying publish to %s: attempt=%d\n", redactURL(cfg.ListenerUrl), attempt)
+		}
+	}
 	client := rc.StandardClient()
 
 	req, err := http.NewRequest(http.MethodPost, cfg.ListenerUrl, bytes.NewReader(resultsJson))
@@ -253,7 +261,7 @@ func publishResults(cfg *HttpPostConfig, resultsJson []byte) error {
 		redactURL(cfg.ListenerUrl), status, len(resultsJson), time.Since(start).Round(time.Millisecond),
 		sessionID, cfg.AccountId, cfg.ClusterIdentifier, cfg.NodeName, cfg.ServiceVersion, strings.TrimSpace(cfg.AuthToken) != "")
 	if err != nil {
-		return err
+		return fmt.Errorf("post to %s: %w", redactURL(cfg.ListenerUrl), stripURLError(err))
 	}
 	defer resp.Body.Close()
 
@@ -283,6 +291,15 @@ func redactURL(raw string) string {
 	u.User = nil
 	u.RawQuery = ""
 	return u.String()
+}
+
+// stripURLError unwraps *url.Error layers, whose messages embed the raw URL.
+func stripURLError(err error) error {
+	var ue *url.Error
+	for errors.As(err, &ue) {
+		err = ue.Err
+	}
+	return err
 }
 
 func readSecretFile(path string) (string, error) {

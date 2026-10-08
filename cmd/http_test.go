@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -118,6 +119,18 @@ func TestPublishResultsStatusHandling(t *testing.T) {
 		if (err != nil) != tc.wantErr {
 			t.Errorf("status %d: err=%v, wantErr=%v", tc.status, err, tc.wantErr)
 		}
+	}
+}
+
+func TestPublishResultsTransportErrorRedacted(t *testing.T) {
+	// Port 1 refuses connections, so the request fails before any response.
+	cfg := &HttpPostConfig{ListenerUrl: "http://127.0.0.1:1/k8s?token=secret", RequestTimeout: 5, HTTPMaxRetries: 0}
+	err := publishResults(cfg, []byte("[]"))
+	if err == nil {
+		t.Fatal("expected transport error")
+	}
+	if strings.Contains(err.Error(), "secret") {
+		t.Errorf("error leaks query string: %v", err)
 	}
 }
 
