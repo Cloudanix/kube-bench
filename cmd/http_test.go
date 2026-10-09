@@ -1,12 +1,17 @@
 package cmd
 
 import (
+	"compress/gzip"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/aquasecurity/kube-bench/check"
 )
 
 func writeTempConfig(t *testing.T, body string) string {
@@ -138,5 +143,63 @@ func TestRedactURL(t *testing.T) {
 	got := redactURL("https://user:pw@listener.example.com/k8s?token=abc")
 	if want := "https://listener.example.com/k8s"; got != want {
 		t.Errorf("redactURL = %q, want %q", got, want)
+	}
+}
+
+func TestPublishResultsGzipsCompactPayload(t *testing.T) {
+	pod := check.FailedResource{Kind: "Pod", Scope: check.ScopeWorkload, Namespace: "default", Name: "web", UID: "u1"}
+	withAttr := func(k, v string) check.FailedResource {
+		fr := pod
+		fr.Attributes = []map[string]string{{k: v}}
+		return fr
+	}
+	controls := []*check.Controls{{ID: "5", Version: "cloudanix-1.0", Groups: []*check.Group{{ID: "5.1", Checks: []*check.Check{
+		{ID: "C1.1", FailedResources: []check.FailedResource{withAttr("privileged", "true")}},
+		{ID: "C1.2", FailedResources: []check.FailedResource{withAttr("runAsNonRoot", "false")}},
+	}}}}}
+	resultsJson, err := marshalControls(controls)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var gotEncoding string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotEncoding = r.Header.Get("Content-Encoding")
+		zr, err := gzip.NewReader(r.Body)
+		if err != nil {
+			t.Errorf("body is not gzip: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		gotBody, _ = io.ReadAll(zr)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg := &HttpPostConfig{ListenerUrl: srv.URL, RequestTimeout: 5, HTTPMaxRetries: 0}
+	if err := publishResults(cfg, resultsJson); err != nil {
+		t.Fatalf("publishResults: %v", err)
+	}
+	if gotEncoding != "gzip" {
+		t.Errorf("Content-Encoding = %q, want gzip", gotEncoding)
+	}
+	if string(gotBody) != string(resultsJson) {
+		t.Error("inflated body differs from the marshaled payload")
+	}
+
+	// Wire shape: one shared resource table, refs per check, no expanded copies.
+	var payload struct {
+		Controls  []map[string]any `json:"controls"`
+		Resources map[string]any   `json:"resources"`
+	}
+	if err := json.Unmarshal(gotBody, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Resources) != 1 || len(payload.Controls) != 1 {
+		t.Errorf("resources=%d controls=%d, want 1 and 1", len(payload.Resources), len(payload.Controls))
+	}
+	if strings.Contains(string(gotBody), `"failed_resources"`) || strings.Count(string(gotBody), `"failed_resource_refs"`) != 2 {
+		t.Errorf("checks are not ref-shaped: %s", gotBody)
 	}
 }

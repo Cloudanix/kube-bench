@@ -16,6 +16,7 @@ package cmd
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -102,12 +103,32 @@ const (
 	HeaderTemplateType      = "cdx-template-type"
 )
 
+// httpPayload is the compact wire shape: each check carries failed_resource_refs into
+// Resources instead of repeating the full object per check. The listener re-expands it
+// (container-workload-services, misconfigservicehandler.expand_compact_payload).
+type httpPayload struct {
+	Controls  []*check.Controls               `json:"controls"`
+	Resources map[string]check.FailedResource `json:"resources"`
+}
+
 func marshalControls(controlsCollection []*check.Controls) ([]byte, error) {
-	b, err := json.Marshal(controlsCollection)
-	if err != nil {
+	resources := check.CompactResources(controlsCollection)
+	return json.Marshal(httpPayload{Controls: controlsCollection, Resources: resources})
+}
+
+// gzipBody compresses the request body. The listener runs on Cloud Run, which rejects
+// HTTP/1 requests over 32 MiB; a scan's JSON is mostly repeated Kubernetes metadata and
+// compresses 10-20x, so this is what keeps a large cluster under that cap.
+func gzipBody(b []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write(b); err != nil {
 		return nil, err
 	}
-	return b, nil
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 func intDefault(v *int, def int) int {
@@ -231,13 +252,18 @@ func publishResults(cfg *HttpPostConfig, resultsJson []byte) error {
 	}
 	client := rc.StandardClient()
 
-	req, err := http.NewRequest(http.MethodPost, cfg.ListenerUrl, bytes.NewReader(resultsJson))
+	body, err := gzipBody(resultsJson)
+	if err != nil {
+		return fmt.Errorf("gzip results: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, cfg.ListenerUrl, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 
 	sessionID := uuid.New().String()
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
 	req.Header.Add(HeaderAuthorization, fmt.Sprintf("Bearer %s", cfg.AuthToken))
 	req.Header.Add(HeaderSessionId, sessionID)
 	req.Header.Add(HeaderAccountId, cfg.AccountId)
@@ -257,20 +283,20 @@ func publishResults(cfg *HttpPostConfig, resultsJson []byte) error {
 	// One greppable line per run: answers "did it send, where, what came back".
 	// The session id matches the backend's cdx-session-id for cross-referencing.
 	// Never the token value, only whether one is set.
-	fmt.Printf("publish summary: url=%s status=%q bytes=%d duration=%s session=%s account=%s cluster=%s node=%s version=%q token_present=%t\n",
-		redactURL(cfg.ListenerUrl), status, len(resultsJson), time.Since(start).Round(time.Millisecond),
+	fmt.Printf("publish summary: url=%s status=%q bytes=%d gzip_bytes=%d duration=%s session=%s account=%s cluster=%s node=%s version=%q token_present=%t\n",
+		redactURL(cfg.ListenerUrl), status, len(resultsJson), len(body), time.Since(start).Round(time.Millisecond),
 		sessionID, cfg.AccountId, cfg.ClusterIdentifier, cfg.NodeName, cfg.ServiceVersion, strings.TrimSpace(cfg.AuthToken) != "")
 	if err != nil {
 		return fmt.Errorf("post to %s: %w", redactURL(cfg.ListenerUrl), stripURLError(err))
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxLoggedResponseBytes))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxLoggedResponseBytes))
 	if err != nil {
 		fmt.Printf("error reading response: %s\n", err)
 	}
 
-	fmt.Printf("response from post: %s\n", string(body))
+	fmt.Printf("response from post: %s\n", string(respBody))
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return fmt.Errorf("unexpected status %d from %s", resp.StatusCode, redactURL(cfg.ListenerUrl))
