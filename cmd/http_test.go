@@ -127,6 +127,33 @@ func TestPublishResultsStatusHandling(t *testing.T) {
 	}
 }
 
+func TestPublishResultsFailsOnRejectedBody(t *testing.T) {
+	// The listener answers 200 even when it drops the scan; the body is the only signal.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"FAILURE","errorCode":404,"message":"message was not accepted"}`))
+	}))
+	defer srv.Close()
+	cfg := &HttpPostConfig{ListenerUrl: srv.URL, RequestTimeout: 5, HTTPMaxRetries: 0}
+	err := publishResults(cfg, []byte("[]"))
+	if err == nil || !strings.Contains(err.Error(), "errorCode=404") {
+		t.Errorf("err = %v, want listener rejection with errorCode=404", err)
+	}
+}
+
+func TestListenerRejection(t *testing.T) {
+	for body, wantErr := range map[string]bool{
+		`{"status":"SUCCESS","errorCode":200}`:                                      false,
+		`{"status":"FAILURE","errorCode":404,"message":"message was not accepted"}`: true,
+		``:                        false, // 204 / empty body
+		`<html>proxy page</html>`: false, // not the listener's shape
+		`{"errorCode":500}`:       false, // no status: cannot tell, keep the status line's verdict
+	} {
+		if err := listenerRejection([]byte(body)); (err != nil) != wantErr {
+			t.Errorf("body %q: err=%v, wantErr=%v", body, err, wantErr)
+		}
+	}
+}
+
 func TestPublishResultsTransportErrorRedacted(t *testing.T) {
 	// Port 1 refuses connections, so the request fails before any response.
 	cfg := &HttpPostConfig{ListenerUrl: "http://127.0.0.1:1/k8s?token=secret", RequestTimeout: 5, HTTPMaxRetries: 0}

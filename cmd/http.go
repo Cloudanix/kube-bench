@@ -301,12 +301,29 @@ func publishResults(cfg *HttpPostConfig, resultsJson []byte) error {
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return fmt.Errorf("unexpected status %d from %s", resp.StatusCode, redactURL(cfg.ListenerUrl))
 	}
-
-	return nil
+	return listenerRejection(respBody)
 }
 
 // maxLoggedResponseBytes caps how much of the listener's response body is logged.
 const maxLoggedResponseBytes = 4096
+
+// listenerStatusFailure is the body status the listener uses for a dropped message.
+const listenerStatusFailure = "FAILURE"
+
+// listenerRejection reports a failure the listener only states in its body. It answers
+// HTTP 200 even when it drops the message (bad gzip, no account config, publish error), so
+// the status line alone would mark a lost scan Completed. A body that is not this JSON
+// shape (proxy page, empty) is not treated as a rejection.
+func listenerRejection(body []byte) error {
+	var r struct {
+		Status    string `json:"status"`
+		ErrorCode int    `json:"errorCode"`
+	}
+	if json.Unmarshal(body, &r) != nil || r.Status != listenerStatusFailure {
+		return nil
+	}
+	return fmt.Errorf("listener rejected the results: errorCode=%d", r.ErrorCode)
+}
 
 // redactURL drops userinfo and query string, which could carry credentials.
 func redactURL(raw string) string {
