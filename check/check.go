@@ -93,11 +93,15 @@ type Check struct {
 	// kind=<Kind> tokens a kubectl audit emits, or — for the host-scoped targets, whose
 	// audits name no object — the node itself. See addNodeResource and
 	// docs-internal/misconfig-cbp/failed-resources.md.
-	FailedResources   []FailedResource `json:"failed_resources,omitempty"`
-	AuditOutput       string           `json:"-"`
-	AuditEnvOutput    string           `json:"-"`
-	AuditConfigOutput string           `json:"-"`
-	DisableEnvTesting bool             `json:"-"`
+	FailedResources []FailedResource `json:"failed_resources,omitempty"`
+	// FailedResourceRefs replaces FailedResources on the wire once CompactResources has
+	// run: each entry points into the payload-level resource table and carries only this
+	// check's attribute sets. Never populated alongside FailedResources.
+	FailedResourceRefs []ResourceRef `json:"failed_resource_refs,omitempty"`
+	AuditOutput        string        `json:"-"`
+	AuditEnvOutput     string        `json:"-"`
+	AuditConfigOutput  string        `json:"-"`
+	DisableEnvTesting  bool          `json:"-"`
 	// usedAuditConfig records that the verdict came from AuditConfig rather than Audit, so
 	// auditedFile names the config file the check actually read.
 	usedAuditConfig bool
