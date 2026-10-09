@@ -55,3 +55,30 @@ func TestCompactResourcesSharesOneTableAcrossChecks(t *testing.T) {
 		t.Errorf("compacted check marshals the wrong keys: %s", b)
 	}
 }
+
+// Without an inventory store, the first check's row may name the Pod bare while a later
+// row carries owner=/labels=. The table entry must keep what the later row knew.
+func TestCompactResourcesFillsGapsFromLaterChecks(t *testing.T) {
+	bare := FailedResource{Kind: "Pod", Scope: ScopeWorkload, Namespace: "default", Name: "web", UID: "u1"}
+	owned := bare
+	owned.Labels = map[string]string{"app": "web"}
+	owned.APIVersion = "v1"
+	owned.Owners = []ParentResource{{Kind: "ReplicaSet", Name: "web-5d"}, {Kind: "Deployment", Name: "web"}}
+	owned.Parent = &owned.Owners[1]
+	partial := bare
+	partial.Owners = owned.Owners[:1]
+
+	checks := []*Check{
+		{ID: "C1.1", FailedResources: []FailedResource{bare}},
+		{ID: "C1.2", FailedResources: []FailedResource{owned}},
+		{ID: "C1.3", FailedResources: []FailedResource{partial}}, // shorter chain must not win
+	}
+	got := CompactResources([]*Controls{{Groups: []*Group{{Checks: checks}}}})[bare.key()]
+
+	if got.Parent == nil || got.Parent.Kind != "Deployment" || len(got.Owners) != 2 {
+		t.Errorf("owner chain lost: owners=%+v parent=%+v", got.Owners, got.Parent)
+	}
+	if got.Labels["app"] != "web" || got.APIVersion != "v1" {
+		t.Errorf("identity gaps not filled: %+v", got)
+	}
+}

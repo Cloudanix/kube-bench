@@ -30,7 +30,8 @@ type ResourceRef struct {
 // grows with distinct objects, not objects × checks.
 //
 // First occurrence wins, which is also how the backend merges one object seen by several
-// checks. The table is keyed by FailedResource.key, the identity the per-check dedup
+// checks, except that gaps in it are filled from later occurrences (see fillGaps). The
+// table is keyed by FailedResource.key, the identity the per-check dedup
 // already uses. This rewrites the checks in place, so only the HTTP output calls it; the
 // JSON file and ASFF outputs keep the expanded shape.
 func CompactResources(controlsCollection []*Controls) map[string]FailedResource {
@@ -53,7 +54,8 @@ func (c *Check) compactResources(resources map[string]FailedResource) {
 	for _, fr := range c.FailedResources {
 		k := fr.key()
 		refs = append(refs, ResourceRef{Ref: k, Attributes: fr.Attributes})
-		if _, seen := resources[k]; seen {
+		if prev, seen := resources[k]; seen {
+			resources[k] = prev.fillGaps(fr)
 			continue
 		}
 		fr.Attributes = nil // finding-scoped: travels on the ref, not the table
@@ -61,4 +63,29 @@ func (c *Check) compactResources(resources map[string]FailedResource) {
 	}
 	c.FailedResourceRefs = refs
 	c.FailedResources = nil
+}
+
+// fillGaps copies into fr what only other's audit row knew. With an inventory store every
+// copy of an object is enriched identically, but without one (no RBAC, kubectl failed) each
+// check's copy holds just the tokens its own audit printed. Before compaction each check
+// kept its own copy, so a check whose row carried owner= still attributed its finding to
+// the Deployment; keeping only the first copy would silently re-parent it to the cluster.
+func (fr FailedResource) fillGaps(other FailedResource) FailedResource {
+	// A longer chain is the more resolved one; Parent is derived from it.
+	if len(other.Owners) > len(fr.Owners) {
+		fr.Owners, fr.Parent = other.Owners, other.Parent
+	}
+	if len(fr.Labels) == 0 {
+		fr.Labels = other.Labels
+	}
+	if fr.APIVersion == "" {
+		fr.APIVersion = other.APIVersion
+	}
+	if fr.CreationTimestamp == "" {
+		fr.CreationTimestamp = other.CreationTimestamp
+	}
+	if fr.Node == "" {
+		fr.Node = other.Node
+	}
+	return fr
 }
