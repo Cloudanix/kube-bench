@@ -139,6 +139,7 @@ func runBenchmark(bv string) {
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
 	goflag.CommandLine.Parse([]string{})
+	setMemoryLimit()
 
 	if err := RootCmd.Execute(); err != nil {
 		fmt.Println(err)
