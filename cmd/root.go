@@ -139,7 +139,6 @@ func runBenchmark(bv string) {
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
 	goflag.CommandLine.Parse([]string{})
-	setMemoryLimit()
 
 	if err := RootCmd.Execute(); err != nil {
 		fmt.Println(err)
@@ -152,7 +151,8 @@ func Execute() {
 }
 
 func init() {
-	cobra.OnInitialize(initConfig)
+	// Runs after flag parsing so glog -v applies to the memory limit log line.
+	cobra.OnInitialize(initConfig, setMemoryLimit)
 
 	// Output control
 	RootCmd.PersistentFlags().IntVar(&exitCode, "exit-code", 0, "Specify the exit code for when checks fail")
