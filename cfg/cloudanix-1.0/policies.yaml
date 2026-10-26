@@ -414,6 +414,7 @@ groups:
           kubectl get pods --all-namespaces -o json | jq -r '
             [ .items[]
             | select(.metadata.namespace as $n | ["kube-system","kube-public","kube-node-lease"] | index($n) | not)
+            | select((.spec.restartPolicy // "Always") == "Always")
             | .metadata as $m
             | (.spec.nodeName // "") as $node
             | (($m.labels // {}) | to_entries | map("\(.key):\(.value)") | join(",")) as $labels
@@ -440,7 +441,8 @@ groups:
         remediation: |
           Define both `livenessProbe` and `readinessProbe` on each long-running
           container so Kubernetes can restart hung pods and keep traffic off pods
-          that are not ready.
+          that are not ready. Run-to-completion pods (restartPolicy Never or
+          OnFailure, which every Job and CronJob pod uses) are not checked.
         scored: true
 
   - id: 2
