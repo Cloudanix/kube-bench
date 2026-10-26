@@ -151,7 +151,8 @@ func Execute() {
 }
 
 func init() {
-	cobra.OnInitialize(initConfig)
+	// Runs after flag parsing so glog -v applies to the memory limit log line.
+	cobra.OnInitialize(initConfig, setMemoryLimit)
 
 	// Output control
 	RootCmd.PersistentFlags().IntVar(&exitCode, "exit-code", 0, "Specify the exit code for when checks fail")
